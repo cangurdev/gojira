@@ -1,0 +1,41 @@
+boards:
+
+  MYBOARD:
+    - name: "My Board Daily"
+      issue_key: MYBOARD-1
+      type: d
+      start_time: "09:30"
+      time_spent: 5m
+      description: Daily
+
+    - name: "My Board Refinement"
+      issue_key: MYBOARD-1
+      type: r
+      start_time: "14:00"
+      description: Refinement
+
+    - name: "My Board Sprint Review"
+      issue_key: MYBOARD-1
+      type: sr
+      start_time: "15:00"
+      description: Review & Retro
+
+    - name: "My Board Sprint Planning"
+      issue_key: MYBOARD-2
+      type: sp
+      start_time: "10:00"
+      description: Planning
+
+  OTHERBOARD:
+    - name: "Other Board Daily"
+      issue_key: OTHERBOARD-10
+      type: d
+      start_time: "10:00"
+      time_spent: 5m
+      description: Daily
+
+    - name: "Other Board Weekly"
+      issue_key: OTHERBOARD-10
+      type: w
+      start_time: "13:00"
+      description: Weekly
