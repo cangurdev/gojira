@@ -29,4 +29,5 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(meetingsCmd)
+	rootCmd.AddCommand(summaryCmd)
 }
