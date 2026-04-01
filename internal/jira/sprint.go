@@ -1,6 +1,9 @@
 package jira
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // GetActiveSprint retrieves the active sprint for a board
 func (c *Client) GetActiveSprint(boardID int) (*Sprint, error) {
@@ -41,6 +44,56 @@ func (c *Client) GetCurrentUser() (*CurrentUser, error) {
 	}
 
 	return &user, nil
+}
+
+// GetTransitions retrieves available transitions for an issue
+func (c *Client) GetTransitions(issueKey string) ([]Transition, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s/transitions", issueKey)
+
+	var response TransitionsResponse
+	if err := c.doRequest("GET", path, nil, &response); err != nil {
+		return nil, fmt.Errorf("failed to get transitions for %s: %w", issueKey, err)
+	}
+
+	return response.Transitions, nil
+}
+
+// TransitionIssue moves an issue to the transition that matches the given name (case-insensitive partial match)
+func (c *Client) TransitionIssue(issueKey, transitionName string) (*Transition, error) {
+	transitions, err := c.GetTransitions(issueKey)
+	if err != nil {
+		return nil, err
+	}
+
+	aliases := map[string]string{
+		"review": "ready for qa",
+	}
+
+	query := strings.ToLower(transitionName)
+	if mapped, ok := aliases[query]; ok {
+		query = mapped
+	}
+
+	for _, t := range transitions {
+		if strings.Contains(strings.ToLower(t.Name), query) {
+			body := map[string]interface{}{
+				"transition": map[string]string{"id": t.ID},
+			}
+			path := fmt.Sprintf("/rest/api/3/issue/%s/transitions", issueKey)
+			if err := c.doRequest("POST", path, body, nil); err != nil {
+				return nil, fmt.Errorf("failed to transition %s: %w", issueKey, err)
+			}
+			return &t, nil
+		}
+	}
+
+	// No match — list available transitions in the error
+	names := make([]string, len(transitions))
+	for i, t := range transitions {
+		names[i] = t.Name
+	}
+	return nil, fmt.Errorf("no transition matching %q found for %s\nAvailable: %s",
+		transitionName, issueKey, strings.Join(names, ", "))
 }
 
 // SearchIssuesByJQL searches for issues using JQL (Jira Query Language)

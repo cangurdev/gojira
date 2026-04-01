@@ -162,6 +162,17 @@ type ErrorResponse struct {
 	Errors        map[string]string `json:"errors"`
 }
 
+// Transition represents a Jira issue transition
+type Transition struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// TransitionsResponse represents the response from the transitions endpoint
+type TransitionsResponse struct {
+	Transitions []Transition `json:"transitions"`
+}
+
 // Template represents a predefined worklog template
 type Template struct {
 	Name        string `yaml:"name"`

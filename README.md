@@ -6,6 +6,7 @@ A command-line interface tool for interacting with Jira, built with Go using the
 
 - **List Sprint Tasks**: View all tasks assigned to you from the active sprint of a selected board
 - **Log Work**: Log time spent on specific issues
+- **Move Issues**: Transition issues to a new status using partial name matching
 - **Interactive Board Selection**: Automatically prompts for board selection when multiple boards are configured
 - **Table Output**: Clean, formatted table display for issue lists
 
@@ -178,6 +179,37 @@ Successfully logged 2h to PROJ-101
 Worklog ID: 12345
 ```
 
+### Move Issue
+
+Transition an issue to a new status using a partial name match:
+
+```bash
+gojira move <issue-key> <status>
+```
+
+If the issue key is omitted, it is inferred from the current git branch name.
+
+**Examples:**
+
+```bash
+# Move to "In Progress"
+gojira move PROJ-123 progress
+
+# Move to "In Review"
+gojira move PROJ-123 review
+
+# Infer issue key from branch (e.g. feature/PROJ-123)
+gojira move test
+```
+
+The status argument is matched case-insensitively. If no match is found, the available transitions are listed.
+
+**Output:**
+
+```
+✓ PROJ-123 → In Progress
+```
+
 ### Help
 
 Get help on available commands:
@@ -186,6 +218,7 @@ Get help on available commands:
 gojira --help
 gojira list --help
 gojira log --help
+gojira move --help
 ```
 
 ## Project Structure
@@ -201,7 +234,8 @@ gojira/
 ├── cmd/
 │   ├── root.go             # Root command setup
 │   ├── list.go             # List command implementation
-│   └── log.go              # Log command implementation
+│   ├── log.go              # Log command implementation
+│   └── move.go             # Move command implementation
 ├── internal/
 │   ├── config/
 │   │   └── config.go       # Configuration loading
