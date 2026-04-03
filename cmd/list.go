@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,9 +12,10 @@ import (
 )
 
 var listCmd = &cobra.Command{
-	Use:   "list",
+	Use:   "list [project]",
 	Short: "List tasks from active sprint",
-	Long:  `List all tasks assigned to the current user from the active sprint of a selected board.`,
+	Long:  `List all tasks assigned to the current user from the active sprint of a selected board. Optionally filter by project key.`,
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runListCommand,
 }
 
@@ -37,10 +39,26 @@ func runListCommand(cmd *cobra.Command, args []string) error {
 		boards = append(boards, *board)
 	}
 
-	// Select board (or use the only one)
-	selectedBoard, err := ui.SelectBoard(boards)
-	if err != nil {
-		return fmt.Errorf("board selection error: %w", err)
+	var selectedBoard *jira.Board
+
+	// If a project key argument is given, find the matching board directly
+	if len(args) == 1 {
+		projectKey := strings.ToUpper(args[0])
+		for i, b := range boards {
+			if strings.ToUpper(b.Location.ProjectKey) == projectKey || strings.ToUpper(b.Name) == projectKey {
+				selectedBoard = &boards[i]
+				break
+			}
+		}
+		if selectedBoard == nil {
+			return fmt.Errorf("no board found for project %q", args[0])
+		}
+	} else {
+		// Select board interactively (or use the only one)
+		selectedBoard, err = ui.SelectBoard(boards)
+		if err != nil {
+			return fmt.Errorf("board selection error: %w", err)
+		}
 	}
 
 	fmt.Printf("\nFetching tasks from board: %s\n\n", selectedBoard.Name)
