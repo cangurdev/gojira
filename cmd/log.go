@@ -15,6 +15,8 @@ import (
 
 var logStartTime string
 var logIssueKey string
+var logDay int
+var logMonth int
 
 var logCmd = &cobra.Command{
 	Use:   "l [time_spent]",
@@ -29,6 +31,8 @@ Example:
   gojira l 1h --start 10:45             # Log 1h, started at 10:45 today
   gojira l 1h --start "2026-02-03 10:45"  # Log 1h, started at given date/time
   gojira l 1h --issue PROJ-123          # Log to specific issue instead of git branch
+  gojira l 1h --day 15                  # Log 1h, start day overridden to 15th of current month
+  gojira l 1h --month 2 --day 3        # Log 1h, start day overridden to February 3
 
 Time format examples:
   - 1h (1 hour)
@@ -39,14 +43,18 @@ Time format examples:
 
 Flags:
   --start   - Override start time (e.g., 10:45 or "2026-02-03 10:45"); ignores time_spent for start calculation
-  --issue   - Override issue key (e.g., PROJ-123); if not provided, uses git branch`,
+  --issue   - Override issue key (e.g., PROJ-123); if not provided, uses git branch
+  --day     - Override day of month (e.g., 15); uses --start for hour or defaults to start calculated from time_spent
+  --month   - Override month (e.g., 2 for February); uses current year`,
 	Args: cobra.ExactArgs(1),
 	RunE: runLogCommand,
 }
 
 func init() {
-	logCmd.Flags().StringVar(&logStartTime, "start", "", "Override start time (e.g., 10:45 or \"2026-02-03 10:45\")")
+	logCmd.Flags().StringVarP(&logStartTime, "start", "s", "", "Override start time (e.g., 10:45 or \"2026-02-03 10:45\")")
 	logCmd.Flags().StringVar(&logIssueKey, "issue", "", "Override issue key (e.g., PROJ-123)")
+	logCmd.Flags().IntVarP(&logDay, "day", "d", 0, "Override day of month (e.g., 15)")
+	logCmd.Flags().IntVarP(&logMonth, "month", "m", 0, "Override month of current year (e.g., 2 for February)")
 }
 
 func runLogCommand(cmd *cobra.Command, args []string) error {
@@ -79,12 +87,21 @@ func runLogCommand(cmd *cobra.Command, args []string) error {
 	var startTime string
 	var displayStart time.Time
 
+	effectiveMonth := now.Month()
+	if logMonth != 0 {
+		effectiveMonth = time.Month(logMonth)
+	}
+
 	if logStartTime != "" {
 		if t, err := time.ParseInLocation("2006-01-02 15:04", logStartTime, time.Local); err == nil {
 			startTime = t.Format("2006-01-02T15:04:05.000-0700")
 			displayStart = t
 		} else if t, err := time.ParseInLocation("15:04", logStartTime, time.Local); err == nil {
-			fullTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, time.Local)
+			day := now.Day()
+			if logDay != 0 {
+				day = logDay
+			}
+			fullTime := time.Date(now.Year(), effectiveMonth, day, t.Hour(), t.Minute(), 0, 0, time.Local)
 			startTime = fullTime.Format("2006-01-02T15:04:05.000-0700")
 			displayStart = fullTime
 		} else {
@@ -97,6 +114,13 @@ func runLogCommand(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid time format: %w", err)
 		}
 		displayStart = now.Add(-duration)
+		if logDay != 0 || logMonth != 0 {
+			day := displayStart.Day()
+			if logDay != 0 {
+				day = logDay
+			}
+			displayStart = time.Date(now.Year(), effectiveMonth, day, displayStart.Hour(), displayStart.Minute(), 0, 0, time.Local)
+		}
 		startTime = displayStart.Format("2006-01-02T15:04:05.000-0700")
 	}
 
