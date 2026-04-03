@@ -14,6 +14,7 @@ import (
 var meetingsStartTime string
 var meetingsDay int
 var meetingsMonth int
+var meetingsDescription string
 
 var meetingsCmd = &cobra.Command{
 	Use:   "m [board_key] [type] [time_spent]",
@@ -39,7 +40,8 @@ Arguments:
 Flags:
   -s, --start     - Override start time (e.g., 10:45 or "2026-02-03 10:45")
   -d, --day       - Override day of month (e.g., 15); uses template start_time for hour
-  -m, --month     - Override month (e.g., 2 for February); uses current year`,
+  -m, --month     - Override month (e.g., 2 for February); uses current year
+  --desc          - Override description (overrides template description)`,
 	Args: cobra.RangeArgs(2, 3),
 	RunE: runMeetingsCommand,
 }
@@ -48,6 +50,7 @@ func init() {
 	meetingsCmd.Flags().StringVarP(&meetingsStartTime, "start", "s", "", "Override start time (e.g., 10:45 or \"2026-02-03 10:45\")")
 	meetingsCmd.Flags().IntVarP(&meetingsDay, "day", "d", 0, "Override day of month (e.g., 15)")
 	meetingsCmd.Flags().IntVarP(&meetingsMonth, "month", "m", 0, "Override month of current year (e.g., 2 for February)")
+	meetingsCmd.Flags().StringVar(&meetingsDescription, "desc", "", "Override description (overrides template description)")
 }
 
 func runMeetingsCommand(cmd *cobra.Command, args []string) error {
@@ -143,12 +146,18 @@ func runMeetingsCommand(cmd *cobra.Command, args []string) error {
 		startTime = now.Format("2006-01-02T15:04:05.000-0700")
 	}
 
+	// Determine description: --desc flag overrides template
+	description := matchedTemplate.Description
+	if meetingsDescription != "" {
+		description = meetingsDescription
+	}
+
 	// Add worklog
 	response, err := client.AddWorklogWithStartTime(
 		matchedTemplate.IssueKey,
-		timeSpent,
+		normalizeTimeSpent(timeSpent),
 		startTime,
-		matchedTemplate.Description,
+		description,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to log work: %w", err)
@@ -156,7 +165,7 @@ func runMeetingsCommand(cmd *cobra.Command, args []string) error {
 
 	// Display success message
 	fmt.Printf("✓ Logged %s to %s (%s)\n", response.TimeSpent, matchedTemplate.IssueKey, matchedTemplate.Name)
-	fmt.Printf("  Description: %s\n", matchedTemplate.Description)
+	fmt.Printf("  Description: %s\n", description)
 	fmt.Printf("  Worklog ID: %s\n", response.ID)
 
 	return nil
