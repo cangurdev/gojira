@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"strconv"
 	"time"
 
@@ -52,7 +53,7 @@ Flags:
 
 func init() {
 	logCmd.Flags().StringVarP(&logStartTime, "start", "s", "", "Override start time (e.g., 10:45 or \"2026-02-03 10:45\")")
-	logCmd.Flags().StringVar(&logIssueKey, "issue", "", "Override issue key (e.g., PROJ-123)")
+	logCmd.Flags().StringVarP(&logIssueKey, "issue", "i", "", "Override issue key (e.g., PROJ-123)")
 	logCmd.Flags().IntVarP(&logDay, "day", "d", 0, "Override day of month (e.g., 15)")
 	logCmd.Flags().IntVarP(&logMonth, "month", "m", 0, "Override month of current year (e.g., 2 for February)")
 }
@@ -128,7 +129,7 @@ func runLogCommand(cmd *cobra.Command, args []string) error {
 	client := jira.NewClient(cfg.JiraURL, cfg.JiraEmail, cfg.JiraAPIToken)
 
 	// Add worklog with empty description
-	response, err := client.AddWorklogWithStartTime(issueKey, timeSpent, startTime, "")
+	response, err := client.AddWorklogWithStartTime(issueKey, normalizeTimeSpent(timeSpent), startTime, "")
 	if err != nil {
 		return fmt.Errorf("failed to log work: %w", err)
 	}
@@ -147,6 +148,16 @@ func isValidIssueKey(key string) bool {
 	pattern := `^[A-Z]+-[0-9]+$`
 	matched, _ := regexp.MatchString(pattern, key)
 	return matched
+}
+
+// normalizeTimeSpent converts "1h30m" style input to Jira-accepted "1h 30m" format
+func normalizeTimeSpent(s string) string {
+	pattern := regexp.MustCompile(`(\d+[wdhm])`)
+	parts := pattern.FindAllString(s, -1)
+	if len(parts) == 0 {
+		return s
+	}
+	return strings.Join(parts, " ")
 }
 
 // parseJiraDuration parses Jira time format (e.g., "30m", "1h", "1h 30m", "2d 4h") to time.Duration
