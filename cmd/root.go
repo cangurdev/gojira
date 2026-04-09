@@ -31,4 +31,5 @@ func init() {
 	rootCmd.AddCommand(meetingsCmd)
 	rootCmd.AddCommand(summaryCmd)
 	rootCmd.AddCommand(moveCmd)
+	rootCmd.AddCommand(timerCmd)
 }
