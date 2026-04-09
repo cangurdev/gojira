@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,8 +16,11 @@ import (
 )
 
 type timerState struct {
-	IssueKey  string    `json:"issue"`
-	StartedAt time.Time `json:"started_at"`
+	IssueKey        string    `json:"issue"`
+	StartedAt       time.Time `json:"started_at"`
+	IsMeeting       bool      `json:"is_meeting,omitempty"`
+	MeetingBoardKey string    `json:"meeting_board_key,omitempty"`
+	MeetingType     string    `json:"meeting_type,omitempty"`
 }
 
 func timerFilePath() (string, error) {
@@ -187,7 +191,34 @@ var timerStopCmd = &cobra.Command{
 		timeSpent := durationToJira(elapsed)
 		startTime := state.StartedAt.Format("2006-01-02T15:04:05.000-0700")
 
-		fmt.Printf("Issue:   %s\n", state.IssueKey)
+		var issueKey, description, label string
+
+		if state.IsMeeting {
+			templates, err := config.LoadTemplates()
+			if err != nil {
+				return fmt.Errorf("failed to load templates: %w", err)
+			}
+			var matched *jira.Template
+			for i := range templates {
+				t := &templates[i]
+				if strings.ToUpper(t.BoardKey) == strings.ToUpper(state.MeetingBoardKey) &&
+					strings.ToLower(t.Type) == strings.ToLower(state.MeetingType) {
+					matched = t
+					break
+				}
+			}
+			if matched == nil {
+				return fmt.Errorf("template not found for board_key=%s type=%s", state.MeetingBoardKey, state.MeetingType)
+			}
+			issueKey = matched.IssueKey
+			description = matched.Description
+			label = fmt.Sprintf("%s (%s)", matched.Name, matched.IssueKey)
+		} else {
+			issueKey = state.IssueKey
+			label = issueKey
+		}
+
+		fmt.Printf("Issue:   %s\n", label)
 		fmt.Printf("Started: %s\n", state.StartedAt.Format("15:04"))
 		fmt.Printf("Elapsed: %s\n", timeSpent)
 		fmt.Print("\nLog this time to Jira? [y/N] ")
@@ -208,7 +239,7 @@ var timerStopCmd = &cobra.Command{
 		}
 
 		client := jira.NewClient(cfg.JiraURL, cfg.JiraEmail, cfg.JiraAPIToken)
-		response, err := client.AddWorklogWithStartTime(state.IssueKey, timeSpent, startTime, "")
+		response, err := client.AddWorklogWithStartTime(issueKey, timeSpent, startTime, description)
 		if err != nil {
 			return fmt.Errorf("failed to log work: %w", err)
 		}
@@ -217,7 +248,58 @@ var timerStopCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("✓ Logged %s to %s\n", response.TimeSpent, state.IssueKey)
+		fmt.Printf("✓ Logged %s to %s\n", response.TimeSpent, label)
+		return nil
+	},
+}
+
+var timerMeetingCmd = &cobra.Command{
+	Use:   "meeting [board_key] [type]",
+	Short: "Start timer for a meeting template",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		boardKey := args[0]
+		meetingType := args[1]
+
+		existing, err := loadTimer()
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			elapsed := time.Since(existing.StartedAt)
+			return fmt.Errorf("timer already running (%s elapsed) — run 'gojira timer stop' first", formatElapsed(elapsed))
+		}
+
+		// Validate template exists
+		templates, err := config.LoadTemplates()
+		if err != nil {
+			return fmt.Errorf("failed to load templates: %w", err)
+		}
+		var matched *jira.Template
+		for i := range templates {
+			t := &templates[i]
+			if strings.ToUpper(t.BoardKey) == strings.ToUpper(boardKey) &&
+				strings.ToLower(t.Type) == strings.ToLower(meetingType) {
+				matched = t
+				break
+			}
+		}
+		if matched == nil {
+			return fmt.Errorf("no template found for board_key=%s type=%s", boardKey, meetingType)
+		}
+
+		state := &timerState{
+			IssueKey:        matched.IssueKey,
+			StartedAt:       time.Now(),
+			IsMeeting:       true,
+			MeetingBoardKey: boardKey,
+			MeetingType:     meetingType,
+		}
+		if err := saveTimer(state); err != nil {
+			return err
+		}
+
+		fmt.Printf("Timer started for %s (%s) at %s\n", matched.Name, matched.IssueKey, state.StartedAt.Format("15:04"))
 		return nil
 	},
 }
@@ -226,4 +308,5 @@ func init() {
 	timerCmd.AddCommand(timerStartCmd)
 	timerCmd.AddCommand(timerStatusCmd)
 	timerCmd.AddCommand(timerStopCmd)
+	timerCmd.AddCommand(timerMeetingCmd)
 }
