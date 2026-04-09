@@ -63,31 +63,38 @@ func runListCommand(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("\nFetching tasks from board: %s\n\n", selectedBoard.Name)
 
-	// Get active sprint for the selected board
-	sprint, err := client.GetActiveSprint(selectedBoard.ID)
-	if err != nil {
-		return fmt.Errorf("failed to get active sprint: %w", err)
-	}
-
-	fmt.Printf("Active sprint: %s\n\n", sprint.Name)
-
 	// Get current user to filter by assignee
 	currentUser, err := client.GetCurrentUser()
 	if err != nil {
 		return fmt.Errorf("failed to get current user: %w", err)
 	}
 
-	// Get all issues from the sprint
-	issues, err := client.GetSprintIssues(sprint.ID)
-	if err != nil {
-		return fmt.Errorf("failed to get sprint issues: %w", err)
-	}
-
-	// Filter issues assigned to the current user
 	var myIssues []jira.Issue
-	for _, issue := range issues {
-		if issue.Fields.Assignee != nil && issue.Fields.Assignee.AccountID == currentUser.AccountID {
-			myIssues = append(myIssues, issue)
+
+	if strings.ToLower(selectedBoard.Type) == "kanban" {
+		// Kanban boards: filter by assignee and exclude done via JQL
+		myIssues, err = client.GetBoardIssuesForCurrentUser(selectedBoard.ID, currentUser.AccountID)
+		if err != nil {
+			return fmt.Errorf("failed to get board issues: %w", err)
+		}
+	} else {
+		// Get active sprint for scrum boards
+		sprint, err := client.GetActiveSprint(selectedBoard.ID)
+		if err != nil {
+			return fmt.Errorf("failed to get active sprint: %w", err)
+		}
+
+		fmt.Printf("Active sprint: %s\n\n", sprint.Name)
+
+		issues, err := client.GetSprintIssues(sprint.ID)
+		if err != nil {
+			return fmt.Errorf("failed to get sprint issues: %w", err)
+		}
+
+		for _, issue := range issues {
+			if issue.Fields.Assignee != nil && issue.Fields.Assignee.AccountID == currentUser.AccountID {
+				myIssues = append(myIssues, issue)
+			}
 		}
 	}
 
