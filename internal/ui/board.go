@@ -63,9 +63,10 @@ type boardModel struct {
 	title string
 	cbs   BoardCallbacks
 
-	allIssues []jira.Issue
-	columns   []boardColumn
-	mineOnly  bool
+	allIssues  []jira.Issue
+	columns    []boardColumn
+	colOffsets []int // scroll offset per column (index = first visible card)
+	mineOnly   bool
 
 	cursorCol int
 	cursorRow int
@@ -237,27 +238,50 @@ func (m boardModel) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursorCol > 0 {
 			m.cursorCol--
 			m.clampRow()
+			m.ensureCursorVisible()
 		}
 	case "right", "l":
 		if m.cursorCol < len(m.columns)-1 {
 			m.cursorCol++
 			m.clampRow()
+			m.ensureCursorVisible()
 		}
 	case "up", "k":
 		if m.cursorRow > 0 {
 			m.cursorRow--
+			m.ensureCursorVisible()
 		}
 	case "down", "j":
 		col := m.currentColumn()
 		if col != nil && m.cursorRow < len(col.cards)-1 {
 			m.cursorRow++
+			m.ensureCursorVisible()
+		}
+	case "pgup", "ctrl+u":
+		per := m.cardsPerView()
+		m.cursorRow -= per
+		if m.cursorRow < 0 {
+			m.cursorRow = 0
+		}
+		m.ensureCursorVisible()
+	case "pgdown", "ctrl+d":
+		col := m.currentColumn()
+		if col != nil {
+			per := m.cardsPerView()
+			m.cursorRow += per
+			if m.cursorRow >= len(col.cards) {
+				m.cursorRow = len(col.cards) - 1
+			}
+			m.ensureCursorVisible()
 		}
 	case "g", "home":
 		m.cursorRow = 0
+		m.ensureCursorVisible()
 	case "G", "end":
 		col := m.currentColumn()
 		if col != nil && len(col.cards) > 0 {
 			m.cursorRow = len(col.cards) - 1
+			m.ensureCursorVisible()
 		}
 	case "a":
 		m.mineOnly = !m.mineOnly
@@ -463,6 +487,7 @@ func (m *boardModel) rebuildColumns() {
 		cols = append(cols, boardColumn{status: s, cards: cards})
 	}
 	m.columns = cols
+	m.colOffsets = make([]int, len(cols))
 
 	// Restore selection if possible
 	if selectedKey != "" {
@@ -505,6 +530,40 @@ func (m *boardModel) clampRow() {
 	if m.cursorRow < 0 {
 		m.cursorRow = 0
 	}
+}
+
+// rowsPerCard is the vertical space a rendered card + gap consumes.
+// Matches the current rounded-border + 3-line body layout: 5 card rows + 1 gap.
+const rowsPerCard = 6
+
+// cardsPerView computes how many cards fit vertically given terminal height
+// minus title/status/hint/column-header chrome.
+func (m boardModel) cardsPerView() int {
+	const chromeRows = 9 // blank + title + blank + col header + blank + blank + status + hint + margin
+	h := m.height - chromeRows
+	if h < rowsPerCard {
+		return 1
+	}
+	return h / rowsPerCard
+}
+
+// ensureCursorVisible scrolls the current column so cursorRow is on screen.
+func (m *boardModel) ensureCursorVisible() {
+	if m.cursorCol < 0 || m.cursorCol >= len(m.colOffsets) {
+		return
+	}
+	per := m.cardsPerView()
+	off := m.colOffsets[m.cursorCol]
+	if m.cursorRow < off {
+		off = m.cursorRow
+	}
+	if m.cursorRow >= off+per {
+		off = m.cursorRow - per + 1
+	}
+	if off < 0 {
+		off = 0
+	}
+	m.colOffsets[m.cursorCol] = off
 }
 
 func (m boardModel) currentColumn() *boardColumn {
@@ -569,7 +628,7 @@ func (m boardModel) View() string {
 	}
 
 	// Hints
-	sb.WriteString(boardHintStyle.Render("h/l columns • j/k rows • m move • w worklog • o open • a mine • r refresh • ? help • q quit"))
+	sb.WriteString(boardHintStyle.Render("h/l cols • j/k rows • pgup/pgdn page • m move • w worklog • o open • a mine • r refresh • ? help • q quit"))
 	sb.WriteString("\n")
 
 	base := sb.String()
@@ -607,6 +666,8 @@ func (m boardModel) viewColumns() string {
 	}
 	cardInnerW := colW - 4 // account for borders + padding
 
+	per := m.cardsPerView()
+
 	rendered := make([]string, totalCols)
 	for ci, col := range m.columns {
 		var colSb strings.Builder
@@ -614,7 +675,22 @@ func (m boardModel) viewColumns() string {
 		colSb.WriteString(header)
 		colSb.WriteString("\n\n")
 
-		for ri, card := range col.cards {
+		offset := 0
+		if ci < len(m.colOffsets) {
+			offset = m.colOffsets[ci]
+		}
+		end := offset + per
+		if end > len(col.cards) {
+			end = len(col.cards)
+		}
+
+		if offset > 0 {
+			colSb.WriteString(boardHintStyle.Render(fmt.Sprintf("  ↑ %d more", offset)))
+			colSb.WriteString("\n")
+		}
+
+		for ri := offset; ri < end; ri++ {
+			card := col.cards[ri]
 			isSelected := ci == m.cursorCol && ri == m.cursorRow
 
 			assignee := "Unassigned"
@@ -639,6 +715,11 @@ func (m boardModel) viewColumns() string {
 				style = boardCardMineStyle
 			}
 			colSb.WriteString(style.Width(colW - 2).Render(cardBody))
+			colSb.WriteString("\n")
+		}
+
+		if end < len(col.cards) {
+			colSb.WriteString(boardHintStyle.Render(fmt.Sprintf("  ↓ %d more", len(col.cards)-end)))
 			colSb.WriteString("\n")
 		}
 
@@ -705,6 +786,8 @@ func (m boardModel) viewHelpOverlay() string {
 		"  l / →        move to column on the right",
 		"  j / ↓        next card in column",
 		"  k / ↑        previous card in column",
+		"  pgdn/ctrl+d  page down within column",
+		"  pgup/ctrl+u  page up within column",
 		"  g / G        jump to first / last card in column",
 		"",
 		"Actions:",
