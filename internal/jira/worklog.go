@@ -101,47 +101,48 @@ type WorklogWithIssue struct {
 
 // GetUserWorklogsForWeek retrieves all worklogs for the current user for the current week
 func (c *Client) GetUserWorklogsForWeek() ([]WorklogWithIssue, error) {
-	// Get current user
+	now := time.Now()
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	startOfWeek := now.AddDate(0, 0, -(weekday - 1))
+	startOfWeek = time.Date(startOfWeek.Year(), startOfWeek.Month(), startOfWeek.Day(), 0, 0, 0, 0, startOfWeek.Location())
+	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
+	return c.GetUserWorklogsBetween(startOfWeek, endOfDay)
+}
+
+// GetUserWorklogsBetween retrieves all worklogs for the current user between from and to (inclusive)
+func (c *Client) GetUserWorklogsBetween(from, to time.Time) ([]WorklogWithIssue, error) {
 	currentUser, err := c.GetCurrentUser()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current user: %w", err)
 	}
 
-	// Calculate start of week (Monday)
-	now := time.Now()
-	weekday := int(now.Weekday())
-	if weekday == 0 { // Sunday
-		weekday = 7
-	}
-	startOfWeek := now.AddDate(0, 0, -(weekday - 1))
-	startOfWeek = time.Date(startOfWeek.Year(), startOfWeek.Month(), startOfWeek.Day(), 0, 0, 0, 0, startOfWeek.Location())
+	fromStr := from.Format("2006-01-02")
+	toStr := to.Format("2006-01-02")
+	jql := fmt.Sprintf("worklogAuthor = currentUser() AND worklogDate >= '%s' AND worklogDate <= '%s'", fromStr, toStr)
 
-	// Build JQL query to find issues where the user logged work this week
-	startOfWeekStr := startOfWeek.Format("2006-01-02")
-	jql := fmt.Sprintf("worklogAuthor = currentUser() AND worklogDate >= '%s'", startOfWeekStr)
-
-	// Search for issues
 	issues, err := c.SearchIssuesByJQL(jql)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search issues: %w", err)
 	}
 
-	// Collect worklogs from all issues
-	var weeklyWorklogs []WorklogWithIssue
+	var result []WorklogWithIssue
+	endOfTo := time.Date(to.Year(), to.Month(), to.Day(), 23, 59, 59, 0, to.Location())
 
 	for _, issue := range issues {
 		worklogs, err := c.GetIssueWorklogs(issue.Key)
 		if err != nil {
-			// Log error but continue with other issues
 			fmt.Printf("Warning: failed to get worklogs for issue %s: %v\n", issue.Key, err)
 			continue
 		}
 
-		// Filter worklogs by current user and date range
 		for _, worklog := range worklogs {
+			started := worklog.Started.Time
 			if worklog.Author.AccountID == currentUser.AccountID &&
-				worklog.Started.After(startOfWeek.Add(-time.Second)) {
-				weeklyWorklogs = append(weeklyWorklogs, WorklogWithIssue{
+				!started.Before(from) && !started.After(endOfTo) {
+				result = append(result, WorklogWithIssue{
 					Worklog:  worklog,
 					IssueKey: issue.Key,
 					Summary:  issue.Fields.Summary,
@@ -150,5 +151,5 @@ func (c *Client) GetUserWorklogsForWeek() ([]WorklogWithIssue, error) {
 		}
 	}
 
-	return weeklyWorklogs, nil
+	return result, nil
 }

@@ -6,35 +6,27 @@ import (
 	"os"
 	"strings"
 
-	"github.com/manifoldco/promptui"
-
 	"gojira/internal/jira"
 )
 
 // SelectBoard prompts the user to select a board from a list using arrow keys
 func SelectBoard(boards []jira.Board) (*jira.Board, error) {
-	// If only one board, return it without prompting
 	if len(boards) == 1 {
 		return &boards[0], nil
 	}
 
-	// Create items for the prompt
 	items := make([]string, len(boards))
 	for i, board := range boards {
 		items[i] = fmt.Sprintf("%s (ID: %d)", board.Name, board.ID)
 	}
 
-	prompt := promptui.Select{
-		Label: "Select a board",
-		Items: items,
-		Size:  10,
-	}
-
-	idx, _, err := prompt.Run()
+	idx, err := runSelect("Select a board", items)
 	if err != nil {
 		return nil, fmt.Errorf("board selection cancelled: %w", err)
 	}
-
+	if idx < 0 {
+		return nil, fmt.Errorf("board selection cancelled")
+	}
 	return &boards[idx], nil
 }
 
@@ -44,23 +36,18 @@ func SelectTemplate(templates []jira.Template) (*jira.Template, error) {
 		return nil, fmt.Errorf("no templates available")
 	}
 
-	// Create items for the prompt
 	items := make([]string, len(templates))
 	for i, t := range templates {
 		items[i] = fmt.Sprintf("%s (%s, %s)", t.Name, t.IssueKey, t.TimeSpent)
 	}
 
-	prompt := promptui.Select{
-		Label: "Select a template",
-		Items: items,
-		Size:  10,
-	}
-
-	idx, _, err := prompt.Run()
+	idx, err := runSelect("Select a template", items)
 	if err != nil {
 		return nil, fmt.Errorf("template selection cancelled: %w", err)
 	}
-
+	if idx < 0 {
+		return nil, fmt.Errorf("template selection cancelled")
+	}
 	return &templates[idx], nil
 }
 
@@ -77,16 +64,13 @@ const (
 func SelectWorklogType() (WorklogType, error) {
 	items := []string{"Issue", "Meeting", "Custom"}
 
-	prompt := promptui.Select{
-		Label: "Select worklog type",
-		Items: items,
-	}
-
-	idx, _, err := prompt.Run()
+	idx, err := runSelect("Select worklog type", items)
 	if err != nil {
 		return 0, fmt.Errorf("worklog type selection cancelled: %w", err)
 	}
-
+	if idx < 0 {
+		return 0, fmt.Errorf("worklog type selection cancelled")
+	}
 	return WorklogType(idx + 1), nil
 }
 
@@ -96,23 +80,18 @@ func SelectMeeting(meetings []jira.Meeting) (*jira.Meeting, error) {
 		return nil, fmt.Errorf("no meetings available for this board")
 	}
 
-	// Create items for the prompt
 	items := make([]string, len(meetings))
 	for i, m := range meetings {
 		items[i] = fmt.Sprintf("%s (%s)", m.Name, m.IssueKey)
 	}
 
-	prompt := promptui.Select{
-		Label: "Select a meeting",
-		Items: items,
-		Size:  10,
-	}
-
-	idx, _, err := prompt.Run()
+	idx, err := runSelect("Select a meeting", items)
 	if err != nil {
 		return nil, fmt.Errorf("meeting selection cancelled: %w", err)
 	}
-
+	if idx < 0 {
+		return nil, fmt.Errorf("meeting selection cancelled")
+	}
 	return &meetings[idx], nil
 }
 

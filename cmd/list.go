@@ -98,14 +98,15 @@ func runListCommand(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Display issues in table format
 	if len(myIssues) == 0 {
 		fmt.Println("No issues assigned to you in this sprint.")
 		return nil
 	}
 
-	fmt.Printf("Issues assigned to %s:\n\n", currentUser.DisplayName)
-	ui.PrintIssuesTable(myIssues)
+	title := fmt.Sprintf("Issues assigned to %s — %s", currentUser.DisplayName, selectedBoard.Name)
+	if err := ui.RunIssuesTable(myIssues, title); err != nil {
+		return fmt.Errorf("issues display error: %w", err)
+	}
 
 	return nil
 }

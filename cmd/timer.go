@@ -13,6 +13,7 @@ import (
 	"gojira/internal/config"
 	"gojira/internal/git"
 	"gojira/internal/jira"
+	"gojira/internal/ui"
 )
 
 type timerState struct {
@@ -160,10 +161,7 @@ var timerStatusCmd = &cobra.Command{
 			fmt.Println("No active timer.")
 			return nil
 		}
-		elapsed := time.Since(state.StartedAt)
-		fmt.Printf("Timer running for %s — %s elapsed (started at %s)\n",
-			state.IssueKey, formatElapsed(elapsed), state.StartedAt.Format("15:04"))
-		return nil
+		return ui.RunTimerStatus(state.IssueKey, state.StartedAt)
 	},
 }
 
@@ -218,14 +216,11 @@ var timerStopCmd = &cobra.Command{
 			label = issueKey
 		}
 
-		fmt.Printf("Issue:   %s\n", label)
-		fmt.Printf("Started: %s\n", state.StartedAt.Format("15:04"))
-		fmt.Printf("Elapsed: %s\n", timeSpent)
-		fmt.Print("\nLog this time to Jira? [y/N] ")
-
-		var answer string
-		fmt.Scanln(&answer)
-		if answer != "y" && answer != "Y" {
+		choice, err := ui.RunTimerConfirm(label, state.StartedAt, timeSpent)
+		if err != nil {
+			return fmt.Errorf("confirm prompt error: %w", err)
+		}
+		if choice != ui.TimerStopLog {
 			if err := deleteTimer(); err != nil {
 				return err
 			}
