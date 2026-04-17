@@ -69,44 +69,34 @@ func runSummaryCommand(cmd *cobra.Command, args []string) error {
 
 	client := jira.NewClient(cfg.JiraURL, cfg.JiraEmail, cfg.JiraAPIToken)
 
-	logFn := func(issueKey, timeSpent, startTime string) (*jira.WorklogResponse, error) {
-		return client.AddWorklogWithStartTime(issueKey, normalizeTimeSpent(timeSpent), startTime, "")
-	}
+	var title string
+	var fetcher func() ([]jira.WorklogWithIssue, error)
 
 	if summaryDate != "" {
-		from, to, title, err := parseDateFlag(summaryDate)
+		from, to, t, err := parseDateFlag(summaryDate)
 		if err != nil {
 			return err
 		}
-		worklogs, err := client.GetUserWorklogsBetween(from, to)
-		if err != nil {
-			return fmt.Errorf("failed to fetch worklogs: %w", err)
+		title = t
+		fetcher = func() ([]jira.WorklogWithIssue, error) {
+			return client.GetUserWorklogsBetween(from, to)
 		}
-		if err := ui.RunSummaryTable(worklogs, title, logFn); err != nil {
-			return fmt.Errorf("summary display error: %w", err)
-		}
-		return nil
-	}
-
-	worklogs, err := client.GetUserWorklogsForWeek()
-	if err != nil {
-		return fmt.Errorf("failed to fetch worklogs: %w", err)
-	}
-
-	if summaryToday {
+	} else if summaryToday {
 		today := time.Now()
-		var todayWorklogs []jira.WorklogWithIssue
-		for _, wl := range worklogs {
-			started := wl.Worklog.Started.Time
-			if started.Year() == today.Year() &&
-				started.Month() == today.Month() &&
-				started.Day() == today.Day() {
-				todayWorklogs = append(todayWorklogs, wl)
+		title = fmt.Sprintf("Today (%s)", today.Format("Mon Jan 2"))
+		fetcher = func() ([]jira.WorklogWithIssue, error) {
+			all, err := client.GetUserWorklogsForWeek()
+			if err != nil {
+				return nil, err
 			}
-		}
-		title := fmt.Sprintf("Today (%s)", today.Format("Mon Jan 2"))
-		if err := ui.RunSummaryTable(todayWorklogs, title, logFn); err != nil {
-			return fmt.Errorf("summary display error: %w", err)
+			var out []jira.WorklogWithIssue
+			for _, wl := range all {
+				s := wl.Worklog.Started.Time
+				if s.Year() == today.Year() && s.Month() == today.Month() && s.Day() == today.Day() {
+					out = append(out, wl)
+				}
+			}
+			return out, nil
 		}
 	} else {
 		now := time.Now()
@@ -115,11 +105,28 @@ func runSummaryCommand(cmd *cobra.Command, args []string) error {
 			weekday = 7
 		}
 		monday := now.AddDate(0, 0, -(weekday - 1))
-		title := fmt.Sprintf("This week (%s - %s)", monday.Format("Jan 2"), now.Format("Jan 2"))
-		if err := ui.RunSummaryTable(worklogs, title, logFn); err != nil {
-			return fmt.Errorf("summary display error: %w", err)
-		}
+		title = fmt.Sprintf("This week (%s - %s)", monday.Format("Jan 2"), now.Format("Jan 2"))
+		fetcher = client.GetUserWorklogsForWeek
 	}
 
+	worklogs, err := fetcher()
+	if err != nil {
+		return fmt.Errorf("failed to fetch worklogs: %w", err)
+	}
+
+	cbs := ui.SummaryCallbacks{
+		Log: func(issueKey, timeSpent, startTime string) (*jira.WorklogResponse, error) {
+			return client.AddWorklogWithStartTime(issueKey, normalizeTimeSpent(timeSpent), startTime, "")
+		},
+		Update: func(issueKey, worklogID, timeSpent, started, description string) (*jira.WorklogResponse, error) {
+			return client.UpdateWorklog(issueKey, worklogID, normalizeTimeSpent(timeSpent), started, description)
+		},
+		Delete:  client.DeleteWorklog,
+		Refresh: fetcher,
+	}
+
+	if err := ui.RunSummaryTable(worklogs, title, cbs); err != nil {
+		return fmt.Errorf("summary display error: %w", err)
+	}
 	return nil
 }
