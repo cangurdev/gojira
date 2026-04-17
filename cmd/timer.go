@@ -18,10 +18,25 @@ import (
 
 type timerState struct {
 	IssueKey        string    `json:"issue"`
-	StartedAt       time.Time `json:"started_at"`
+	StartedAt       time.Time `json:"started_at"`                 // original first start; never changes
+	ResumedAt       time.Time `json:"resumed_at,omitzero"`        // when the current run began; zero when paused
+	AccumulatedMs   int64     `json:"accumulated_ms,omitempty"`   // completed run durations before current run
+	Paused          bool      `json:"paused,omitempty"`
 	IsMeeting       bool      `json:"is_meeting,omitempty"`
 	MeetingBoardKey string    `json:"meeting_board_key,omitempty"`
 	MeetingType     string    `json:"meeting_type,omitempty"`
+}
+
+func (s *timerState) elapsed() time.Duration {
+	acc := time.Duration(s.AccumulatedMs) * time.Millisecond
+	if s.Paused {
+		return acc
+	}
+	runStart := s.ResumedAt
+	if runStart.IsZero() {
+		runStart = s.StartedAt
+	}
+	return acc + time.Since(runStart)
 }
 
 func timerFilePath() (string, error) {
@@ -118,8 +133,11 @@ var timerStartCmd = &cobra.Command{
 			return err
 		}
 		if existing != nil {
-			elapsed := time.Since(existing.StartedAt)
-			return fmt.Errorf("timer already running for %s (%s elapsed) — run 'gojira timer stop' first", existing.IssueKey, formatElapsed(elapsed))
+			status := "running"
+			if existing.Paused {
+				status = "paused"
+			}
+			return fmt.Errorf("timer already %s for %s (%s elapsed) — run 'gojira timer stop' first", status, existing.IssueKey, formatElapsed(existing.elapsed()))
 		}
 
 		var issueKey string
@@ -136,9 +154,11 @@ var timerStartCmd = &cobra.Command{
 			return fmt.Errorf("invalid issue key format: %s (expected format: PROJ-123)", issueKey)
 		}
 
+		now := time.Now()
 		state := &timerState{
 			IssueKey:  issueKey,
-			StartedAt: time.Now(),
+			StartedAt: now,
+			ResumedAt: now,
 		}
 		if err := saveTimer(state); err != nil {
 			return err
@@ -161,7 +181,69 @@ var timerStatusCmd = &cobra.Command{
 			fmt.Println("No active timer.")
 			return nil
 		}
-		return ui.RunTimerStatus(state.IssueKey, state.StartedAt)
+		runStart := state.ResumedAt
+		if runStart.IsZero() {
+			runStart = state.StartedAt
+		}
+		accumulated := time.Duration(state.AccumulatedMs) * time.Millisecond
+		return ui.RunTimerStatus(state.IssueKey, state.StartedAt, runStart, accumulated, state.Paused)
+	},
+}
+
+var timerPauseCmd = &cobra.Command{
+	Use:   "pause",
+	Short: "Pause the running timer",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		state, err := loadTimer()
+		if err != nil {
+			return err
+		}
+		if state == nil {
+			return fmt.Errorf("no active timer running")
+		}
+		if state.Paused {
+			return fmt.Errorf("timer already paused for %s (%s elapsed)", state.IssueKey, formatElapsed(state.elapsed()))
+		}
+
+		runStart := state.ResumedAt
+		if runStart.IsZero() {
+			runStart = state.StartedAt
+		}
+		state.AccumulatedMs += time.Since(runStart).Milliseconds()
+		state.ResumedAt = time.Time{}
+		state.Paused = true
+
+		if err := saveTimer(state); err != nil {
+			return err
+		}
+		fmt.Printf("⏸  Timer paused for %s at %s (%s elapsed)\n", state.IssueKey, time.Now().Format("15:04"), formatElapsed(state.elapsed()))
+		return nil
+	},
+}
+
+var timerResumeCmd = &cobra.Command{
+	Use:   "resume",
+	Short: "Resume a paused timer",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		state, err := loadTimer()
+		if err != nil {
+			return err
+		}
+		if state == nil {
+			return fmt.Errorf("no active timer running")
+		}
+		if !state.Paused {
+			return fmt.Errorf("timer is already running for %s (%s elapsed)", state.IssueKey, formatElapsed(state.elapsed()))
+		}
+
+		state.ResumedAt = time.Now()
+		state.Paused = false
+
+		if err := saveTimer(state); err != nil {
+			return err
+		}
+		fmt.Printf("▶  Timer resumed for %s at %s (%s elapsed)\n", state.IssueKey, state.ResumedAt.Format("15:04"), formatElapsed(state.elapsed()))
+		return nil
 	},
 }
 
@@ -177,7 +259,7 @@ var timerStopCmd = &cobra.Command{
 			return fmt.Errorf("no active timer running")
 		}
 
-		elapsed := time.Since(state.StartedAt)
+		elapsed := state.elapsed()
 		if elapsed < time.Minute {
 			if err := deleteTimer(); err != nil {
 				return err
@@ -261,8 +343,11 @@ var timerMeetingCmd = &cobra.Command{
 			return err
 		}
 		if existing != nil {
-			elapsed := time.Since(existing.StartedAt)
-			return fmt.Errorf("timer already running (%s elapsed) — run 'gojira timer stop' first", formatElapsed(elapsed))
+			status := "running"
+			if existing.Paused {
+				status = "paused"
+			}
+			return fmt.Errorf("timer already %s (%s elapsed) — run 'gojira timer stop' first", status, formatElapsed(existing.elapsed()))
 		}
 
 		// Validate template exists
@@ -283,9 +368,11 @@ var timerMeetingCmd = &cobra.Command{
 			return fmt.Errorf("no template found for board_key=%s type=%s", boardKey, meetingType)
 		}
 
+		now := time.Now()
 		state := &timerState{
 			IssueKey:        matched.IssueKey,
-			StartedAt:       time.Now(),
+			StartedAt:       now,
+			ResumedAt:       now,
 			IsMeeting:       true,
 			MeetingBoardKey: boardKey,
 			MeetingType:     meetingType,
@@ -303,5 +390,7 @@ func init() {
 	timerCmd.AddCommand(timerStartCmd)
 	timerCmd.AddCommand(timerStatusCmd)
 	timerCmd.AddCommand(timerStopCmd)
+	timerCmd.AddCommand(timerPauseCmd)
+	timerCmd.AddCommand(timerResumeCmd)
 	timerCmd.AddCommand(timerMeetingCmd)
 }

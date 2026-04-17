@@ -13,6 +13,7 @@ import (
 var (
 	timerIssueStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	timerElapsedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Width(10)
+	timerPausedStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("3")).Padding(0, 1)
 	timerLabelStyle   = lipgloss.NewStyle().Faint(true)
 	timerHintStyle    = lipgloss.NewStyle().Faint(true)
 
@@ -26,10 +27,13 @@ var (
 type tickMsg time.Time
 
 type timerStatusModel struct {
-	issueKey  string
-	startedAt time.Time
-	elapsed   time.Duration
-	quit      bool
+	issueKey    string
+	startedAt   time.Time     // original first start
+	runStart    time.Time     // start of current active run (ignored if paused)
+	accumulated time.Duration // completed run durations before current
+	paused      bool
+	elapsed     time.Duration
+	quit        bool
 }
 
 func (m timerStatusModel) Init() tea.Cmd {
@@ -42,10 +46,17 @@ func tickEvery() tea.Cmd {
 	})
 }
 
+func (m timerStatusModel) computeElapsed() time.Duration {
+	if m.paused {
+		return m.accumulated
+	}
+	return m.accumulated + time.Since(m.runStart)
+}
+
 func (m timerStatusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		m.elapsed = time.Since(m.startedAt)
+		m.elapsed = m.computeElapsed()
 		return m, tickEvery()
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -65,6 +76,16 @@ func (m timerStatusModel) View() string {
 
 	elapsedStr := fmt.Sprintf("%02d:%02d:%02d", h, min, sec)
 
+	stateLine := timerElapsedStyle.Render(elapsedStr)
+	if m.paused {
+		stateLine = stateLine + "  " + timerPausedStyle.Render("PAUSED")
+	}
+
+	hint := "q quit"
+	if m.paused {
+		hint = "run 'gojira timer resume' to continue • q quit"
+	}
+
 	return fmt.Sprintf(
 		"\n  %s  %s\n  %s  %s\n  %s  %s\n\n  %s\n",
 		timerLabelStyle.Render("Issue  :"),
@@ -72,18 +93,24 @@ func (m timerStatusModel) View() string {
 		timerLabelStyle.Render("Started:"),
 		timerLabelStyle.Render(m.startedAt.Format("15:04")),
 		timerLabelStyle.Render("Elapsed:"),
-		timerElapsedStyle.Render(elapsedStr),
-		timerHintStyle.Render("q quit"),
+		stateLine,
+		timerHintStyle.Render(hint),
 	)
 }
 
 // RunTimerStatus shows a live-updating timer display.
-func RunTimerStatus(issueKey string, startedAt time.Time) error {
+// startedAt is the original first start; runStart is the beginning of the current
+// active run (ignored when paused); accumulated is the completed run time prior
+// to the current run.
+func RunTimerStatus(issueKey string, startedAt, runStart time.Time, accumulated time.Duration, paused bool) error {
 	m := timerStatusModel{
-		issueKey:  issueKey,
-		startedAt: startedAt,
-		elapsed:   time.Since(startedAt),
+		issueKey:    issueKey,
+		startedAt:   startedAt,
+		runStart:    runStart,
+		accumulated: accumulated,
+		paused:      paused,
 	}
+	m.elapsed = m.computeElapsed()
 	_, err := tea.NewProgram(m).Run()
 	return err
 }
