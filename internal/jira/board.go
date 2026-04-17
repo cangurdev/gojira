@@ -1,6 +1,9 @@
 package jira
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 // GetBoard retrieves board details by board ID
 func (c *Client) GetBoard(boardID int) (*Board, error) {
@@ -27,9 +30,12 @@ func (c *Client) GetBoardIssuesForCurrentUser(boardID int, accountID string) ([]
 	return response.Issues, nil
 }
 
-// GetBoardIssues retrieves all issues on a board (no assignee filter)
+// GetBoardIssues retrieves all non-done issues on a board (no assignee filter).
+// Uses statusCategory to exclude anything Jira classifies as done (Done, Closed,
+// Resolved, etc.), so kanban boards don't render a huge Done column.
 func (c *Client) GetBoardIssues(boardID int) ([]Issue, error) {
-	path := fmt.Sprintf("/rest/agile/1.0/board/%d/issue?fields=key,summary,status,assignee&maxResults=200", boardID)
+	jql := url.QueryEscape("statusCategory != Done")
+	path := fmt.Sprintf("/rest/agile/1.0/board/%d/issue?fields=key,summary,status,assignee&maxResults=200&jql=%s", boardID, jql)
 
 	var response IssuesResponse
 	if err := c.doRequest("GET", path, nil, &response); err != nil {
