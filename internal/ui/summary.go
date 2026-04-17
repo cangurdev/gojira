@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -26,10 +25,14 @@ var (
 	formSuccessStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
 	formErrorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 
-	summaryCursorStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	pivotHeaderStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	pivotSelectedStyle = lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("17")).Foreground(lipgloss.Color("15"))
+	pivotTotalStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+	pivotZeroStyle     = lipgloss.NewStyle().Faint(true)
+	pivotCursorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 
-	summaryDangerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("1")).Padding(0, 1)
-	summaryIdleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Padding(0, 1)
+	summaryDangerStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("1")).Padding(0, 1)
+	summaryIdleStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Padding(0, 1)
 	summaryConfirmStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6")).Padding(0, 1)
 )
 
@@ -37,6 +40,7 @@ type summaryState int
 
 const (
 	stateTable summaryState = iota
+	stateDetail
 	stateForm
 	stateEdit
 	stateConfirmDelete
@@ -53,28 +57,31 @@ type SummaryCallbacks struct {
 	Refresh func() ([]jira.WorklogWithIssue, error)
 }
 
-type summaryEntry struct {
-	idx int // flat index into summaryModel.worklogs
-	wl  jira.WorklogWithIssue
-}
-
-type summaryDay struct {
-	label   string
-	total   int // seconds
-	entries []summaryEntry
+type pivotRow struct {
+	projectKey  string
+	projectName string
+	dayTotals   map[string]int // date key "2006-01-02" -> seconds
+	total       int
 }
 
 type summaryModel struct {
-	viewport viewport.Model
-	title    string
+	title      string
+	worklogs   []jira.WorklogWithIssue
+	rows       []pivotRow
+	cols       []string // sorted date keys
+	colLabels  []string // "Mon 14"
+	colTotals  []int    // per-col total seconds
+	grandTotal int
 
-	worklogs  []jira.WorklogWithIssue
-	days      []summaryDay
-	cursor    int
-	subtotals []string
-	totalLine string
+	cursorRow int
+	cursorCol int // 0 = Total col, 1+ = day cols
 
 	state summaryState
+
+	// detail overlay
+	detailWorklogs []jira.WorklogWithIssue
+	detailCursor   int
+	detailTitle    string
 
 	// new-log form
 	inputs  [3]textinput.Model
@@ -85,10 +92,9 @@ type summaryModel struct {
 	editFocused int
 
 	// delete confirm
-	deleteCursor int // 0 = Cancel, 1 = Delete
+	deleteCursor int
 
-	cbs SummaryCallbacks
-
+	cbs      SummaryCallbacks
 	feedback string
 	isError  bool
 }
@@ -105,9 +111,7 @@ type editResultMsg struct {
 	err      error
 }
 
-type deleteResultMsg struct {
-	err error
-}
+type deleteResultMsg struct{ err error }
 
 type refreshResultMsg struct {
 	worklogs []jira.WorklogWithIssue
@@ -135,7 +139,7 @@ func (m summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.feedback = fmt.Sprintf("✓ Updated worklog (%s)", msg.response.TimeSpent)
 		m.isError = false
-		m.state = stateTable
+		m.state = stateDetail
 		return m, m.refreshCmd()
 
 	case deleteResultMsg:
@@ -146,7 +150,7 @@ func (m summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.feedback = "✓ Deleted worklog"
 		m.isError = false
-		m.state = stateTable
+		m.state = stateDetail
 		return m, m.refreshCmd()
 
 	case refreshResultMsg:
@@ -155,26 +159,18 @@ func (m summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isError = true
 			return m, nil
 		}
-		prevID := ""
-		if w := m.currentWorklog(); w != nil {
-			prevID = w.Worklog.ID
-		}
 		m.setWorklogs(msg.worklogs)
-		if prevID != "" {
-			for i, w := range m.worklogs {
-				if w.Worklog.ID == prevID {
-					m.cursor = i
-					break
-				}
-			}
+		if m.state == stateDetail {
+			m.rebuildDetail()
 		}
-		m.viewport.SetContent(m.renderContent())
 		return m, nil
 	}
 
 	switch m.state {
 	case stateTable:
 		return m.updateTable(msg)
+	case stateDetail:
+		return m.updateDetail(msg)
 	case stateForm:
 		return m.updateForm(msg)
 	case stateEdit:
@@ -186,54 +182,92 @@ func (m summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m summaryModel) updateTable(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if km, ok := msg.(tea.KeyMsg); ok {
-		switch km.String() {
-		case "q", "ctrl+c", "esc":
-			return m, tea.Quit
-		case "down", "j":
-			if m.cursor < len(m.worklogs)-1 {
-				m.cursor++
-				m.viewport.SetContent(m.renderContent())
-			}
-			return m, nil
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-				m.viewport.SetContent(m.renderContent())
-			}
-			return m, nil
-		case "n":
-			m.state = stateForm
-			m.focused = 0
+	km, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch km.String() {
+	case "q", "ctrl+c", "esc":
+		return m, tea.Quit
+	case "up", "k":
+		if m.cursorRow > 0 {
+			m.cursorRow--
+		}
+	case "down", "j":
+		if m.cursorRow < len(m.rows)-1 {
+			m.cursorRow++
+		}
+	case "left", "h":
+		if m.cursorCol > 0 {
+			m.cursorCol--
+		}
+	case "right", "l":
+		if m.cursorCol < len(m.cols) {
+			m.cursorCol++
+		}
+	case "enter", " ":
+		if len(m.rows) > 0 {
+			m.state = stateDetail
+			m.detailCursor = 0
+			m.rebuildDetail()
+		}
+	case "n":
+		m.state = stateForm
+		m.focused = 0
+		m.feedback = ""
+		m.isError = false
+		for i := range m.inputs {
+			m.inputs[i].SetValue("")
+		}
+		return m, m.inputs[0].Focus()
+	case "r":
+		m.feedback = "Refreshing..."
+		m.isError = false
+		return m, m.refreshCmd()
+	}
+	return m, nil
+}
+
+func (m summaryModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
+	km, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch km.String() {
+	case "esc", "q":
+		m.state = stateTable
+		m.feedback = ""
+	case "up", "k":
+		if m.detailCursor > 0 {
+			m.detailCursor--
+		}
+	case "down", "j":
+		if m.detailCursor < len(m.detailWorklogs)-1 {
+			m.detailCursor++
+		}
+	case "e":
+		if wl := m.currentDetailWorklog(); wl != nil {
+			m = m.openEditForm(wl)
+			return m, m.editInputs[0].Focus()
+		}
+	case "d":
+		if m.currentDetailWorklog() != nil {
+			m.state = stateConfirmDelete
+			m.deleteCursor = 0
 			m.feedback = ""
 			m.isError = false
-			for i := range m.inputs {
-				m.inputs[i].SetValue("")
-			}
-			return m, m.inputs[0].Focus()
-		case "e":
-			if wl := m.currentWorklog(); wl != nil {
-				m = m.openEditForm(wl)
-				return m, m.editInputs[0].Focus()
-			}
-			return m, nil
-		case "d":
-			if m.currentWorklog() != nil {
-				m.state = stateConfirmDelete
-				m.deleteCursor = 0
-				m.feedback = ""
-				m.isError = false
-			}
-			return m, nil
-		case "r":
-			m.feedback = "Refreshing..."
-			m.isError = false
-			return m, m.refreshCmd()
 		}
+	case "n":
+		m.state = stateForm
+		m.focused = 0
+		m.feedback = ""
+		m.isError = false
+		for i := range m.inputs {
+			m.inputs[i].SetValue("")
+		}
+		return m, m.inputs[0].Focus()
 	}
-	var cmd tea.Cmd
-	m.viewport, cmd = m.viewport.Update(msg)
-	return m, cmd
+	return m, nil
 }
 
 func (m summaryModel) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -320,7 +354,7 @@ func (m summaryModel) updateEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if km, ok := msg.(tea.KeyMsg); ok {
 		switch km.String() {
 		case "esc":
-			m.state = stateTable
+			m.state = stateDetail
 			return m, nil
 		case "tab", "down":
 			m.editInputs[m.editFocused].Blur()
@@ -345,9 +379,9 @@ func (m summaryModel) updateEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m summaryModel) submitEdit() (tea.Model, tea.Cmd) {
-	wl := m.currentWorklog()
+	wl := m.currentDetailWorklog()
 	if wl == nil {
-		m.state = stateTable
+		m.state = stateDetail
 		return m, nil
 	}
 
@@ -406,25 +440,25 @@ func (m summaryModel) updateConfirmDelete(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.deleteCursor == 1 {
 			return m.performDelete()
 		}
-		m.state = stateTable
+		m.state = stateDetail
 	case "y", "Y":
 		return m.performDelete()
 	case "n", "N", "esc", "q":
-		m.state = stateTable
+		m.state = stateDetail
 	}
 	return m, nil
 }
 
 func (m summaryModel) performDelete() (tea.Model, tea.Cmd) {
-	wl := m.currentWorklog()
+	wl := m.currentDetailWorklog()
 	if wl == nil {
-		m.state = stateTable
+		m.state = stateDetail
 		return m, nil
 	}
 	delFn := m.cbs.Delete
 	issueKey := wl.IssueKey
 	id := wl.Worklog.ID
-	m.state = stateTable
+	m.state = stateDetail
 	return m, func() tea.Msg {
 		return deleteResultMsg{err: delFn(issueKey, id)}
 	}
@@ -443,98 +477,263 @@ func (m summaryModel) refreshCmd() tea.Cmd {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-func (m summaryModel) currentWorklog() *jira.WorklogWithIssue {
-	if m.cursor < 0 || m.cursor >= len(m.worklogs) {
+func (m summaryModel) currentDetailWorklog() *jira.WorklogWithIssue {
+	if m.detailCursor < 0 || m.detailCursor >= len(m.detailWorklogs) {
 		return nil
 	}
-	return &m.worklogs[m.cursor]
+	return &m.detailWorklogs[m.detailCursor]
 }
 
 func (m *summaryModel) setWorklogs(worklogs []jira.WorklogWithIssue) {
-	sort.Slice(worklogs, func(i, j int) bool {
-		return worklogs[i].Worklog.Started.Before(worklogs[j].Worklog.Started.Time)
-	})
 	m.worklogs = worklogs
-	m.rebuildDays()
-	if m.cursor >= len(m.worklogs) {
-		m.cursor = len(m.worklogs) - 1
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
+	m.rebuildPivot()
 }
 
-func (m *summaryModel) rebuildDays() {
-	m.days = nil
-	m.subtotals = nil
-	dayIndex := map[string]int{}
-	for i, wl := range m.worklogs {
-		key := wl.Worklog.Started.Format("2006-01-02")
-		if _, ok := dayIndex[key]; !ok {
-			dayIndex[key] = len(m.days)
-			m.days = append(m.days, summaryDay{label: wl.Worklog.Started.Format("Mon, Jan 2")})
-		}
-		idx := dayIndex[key]
-		m.days[idx].entries = append(m.days[idx].entries, summaryEntry{idx: i, wl: wl})
-		m.days[idx].total += wl.Worklog.TimeSpentSeconds
-	}
-	grandTotal := 0
-	for _, d := range m.days {
-		h := d.total / 3600
-		mn := (d.total % 3600) / 60
-		m.subtotals = append(m.subtotals, fmt.Sprintf("  %-14s total: %dh %dm", d.label, h, mn))
-		grandTotal += d.total
-	}
-	gh := grandTotal / 3600
-	gm := (grandTotal % 3600) / 60
-	m.totalLine = fmt.Sprintf("Grand total: %dh %dm (%d worklogs)", gh, gm, len(m.worklogs))
-}
+func (m *summaryModel) rebuildPivot() {
+	dateSet := map[string]bool{}
+	issueMap := map[string]*pivotRow{}
+	var issueOrder []string
 
-func (m summaryModel) renderContent() string {
-	dayHeaderStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Underline(true)
-	dayTotalStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-	timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
-	spentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-
-	const colWidth = 46
-	const summaryWidth = 22
-	colStyle := lipgloss.NewStyle().Width(colWidth).PaddingRight(2)
-
-	dayColumns := make([]string, 0, len(m.days))
-	for _, day := range m.days {
-		h := day.total / 3600
-		mn := (day.total % 3600) / 60
-
-		var col strings.Builder
-		col.WriteString(dayHeaderStyle.Render(day.label))
-		col.WriteString("  ")
-		col.WriteString(dayTotalStyle.Render(fmt.Sprintf("(%dh %dm)", h, mn)))
-		col.WriteString("\n\n")
-		for _, entry := range day.entries {
-			prefix := "  "
-			if entry.idx == m.cursor {
-				prefix = summaryCursorStyle.Render("▶ ")
+	for _, wl := range m.worklogs {
+		dk := wl.Worklog.Started.Format("2006-01-02")
+		dateSet[dk] = true
+		pk := wl.ProjectKey
+		if pk == "" {
+			// fallback: derive from issue key
+			if i := strings.Index(wl.IssueKey, "-"); i > 0 {
+				pk = wl.IssueKey[:i]
+			} else {
+				pk = wl.IssueKey
 			}
-			col.WriteString(prefix)
-			col.WriteString(fmt.Sprintf("%s  %s  %s  %s\n",
-				timeStyle.Render(entry.wl.Worklog.Started.Format("15:04")),
-				keyStyle.Render(fmt.Sprintf("%-10s", entry.wl.IssueKey)),
-				fmt.Sprintf("%-*s", summaryWidth, truncate(entry.wl.Summary, summaryWidth)),
-				spentStyle.Render(entry.wl.Worklog.TimeSpent),
-			))
 		}
-		dayColumns = append(dayColumns, colStyle.Render(col.String()))
+		if _, ok := issueMap[pk]; !ok {
+			issueOrder = append(issueOrder, pk)
+			name := wl.ProjectName
+			if name == "" {
+				name = pk
+			}
+			issueMap[pk] = &pivotRow{
+				projectKey:  pk,
+				projectName: name,
+				dayTotals:   map[string]int{},
+			}
+		}
+		r := issueMap[pk]
+		r.dayTotals[dk] += wl.Worklog.TimeSpentSeconds
+		r.total += wl.Worklog.TimeSpentSeconds
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, dayColumns...)
+
+	cols := make([]string, 0, len(dateSet))
+	for dk := range dateSet {
+		cols = append(cols, dk)
+	}
+	sort.Strings(cols)
+	m.cols = cols
+
+	m.colLabels = make([]string, len(cols))
+	for i, dk := range cols {
+		t, _ := time.Parse("2006-01-02", dk)
+		m.colLabels[i] = t.Format("Mon 2")
+	}
+
+	m.colTotals = make([]int, len(cols))
+	for i, dk := range cols {
+		for _, r := range issueMap {
+			m.colTotals[i] += r.dayTotals[dk]
+		}
+	}
+
+	m.grandTotal = 0
+	m.rows = make([]pivotRow, 0, len(issueOrder))
+	for _, ik := range issueOrder {
+		m.rows = append(m.rows, *issueMap[ik])
+		m.grandTotal += issueMap[ik].total
+	}
+	sort.Slice(m.rows, func(i, j int) bool {
+		return m.rows[i].total > m.rows[j].total
+	})
+
+	if m.cursorRow >= len(m.rows) {
+		m.cursorRow = len(m.rows) - 1
+	}
+	if m.cursorRow < 0 {
+		m.cursorRow = 0
+	}
+	if m.cursorCol > len(m.cols) {
+		m.cursorCol = len(m.cols)
+	}
+}
+
+func (m *summaryModel) rebuildDetail() {
+	if m.cursorRow >= len(m.rows) {
+		m.detailWorklogs = nil
+		return
+	}
+	row := m.rows[m.cursorRow]
+	var filtered []jira.WorklogWithIssue
+	for _, wl := range m.worklogs {
+		pk := wl.ProjectKey
+		if pk == "" {
+			if i := strings.Index(wl.IssueKey, "-"); i > 0 {
+				pk = wl.IssueKey[:i]
+			} else {
+				pk = wl.IssueKey
+			}
+		}
+		if pk != row.projectKey {
+			continue
+		}
+		if m.cursorCol > 0 {
+			dk := m.cols[m.cursorCol-1]
+			if wl.Worklog.Started.Format("2006-01-02") != dk {
+				continue
+			}
+		}
+		filtered = append(filtered, wl)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Worklog.Started.Before(filtered[j].Worklog.Started.Time)
+	})
+	m.detailWorklogs = filtered
+
+	if m.cursorCol == 0 {
+		m.detailTitle = fmt.Sprintf("%s — tüm worklogs", row.projectName)
+	} else {
+		dk := m.cols[m.cursorCol-1]
+		t, _ := time.Parse("2006-01-02", dk)
+		m.detailTitle = fmt.Sprintf("%s — %s", row.projectName, t.Format("Mon Jan 2"))
+	}
+
+	if m.detailCursor >= len(m.detailWorklogs) {
+		m.detailCursor = len(m.detailWorklogs) - 1
+	}
+	if m.detailCursor < 0 {
+		m.detailCursor = 0
+	}
+}
+
+func fmtDur(secs int) string {
+	if secs == 0 {
+		return "─"
+	}
+	h := secs / 3600
+	mn := (secs % 3600) / 60
+	if h == 0 {
+		return fmt.Sprintf("%dm", mn)
+	}
+	if mn == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh %dm", h, mn)
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+
+const (
+	issueColW = 26
+	timeColW  = 9
+)
+
+func (m summaryModel) renderPivot() string {
+	issueStyle := func(w int) lipgloss.Style { return lipgloss.NewStyle().Width(w) }
+	timeStyle := lipgloss.NewStyle().Width(timeColW)
+
+	// Header
+	var hdr strings.Builder
+	hdr.WriteString(pivotHeaderStyle.Render(issueStyle(issueColW).Render("Issue")))
+	hdr.WriteString(pivotHeaderStyle.Render(timeStyle.Render("Total")))
+	for _, lbl := range m.colLabels {
+		hdr.WriteString(pivotHeaderStyle.Render(timeStyle.Render(lbl)))
+	}
+
+	sepLen := issueColW + timeColW*(1+len(m.cols))
+	sep := strings.Repeat("─", sepLen)
+
+	var sb strings.Builder
+	sb.WriteString(hdr.String())
+	sb.WriteString("\n")
+	sb.WriteString(lipgloss.NewStyle().Faint(true).Render(sep))
+	sb.WriteString("\n")
+
+	for ri, row := range m.rows {
+		isRow := ri == m.cursorRow && m.state == stateTable
+
+		label := truncate(row.projectName, issueColW-2)
+		prefix := "  "
+		if isRow {
+			prefix = pivotCursorStyle.Render("▶ ")
+		}
+		var line strings.Builder
+		line.WriteString(prefix)
+		line.WriteString(issueStyle(issueColW - 2).Render(label))
+
+		// total cell
+		totalStr := fmtDur(row.total)
+		if isRow && m.cursorCol == 0 {
+			line.WriteString(pivotSelectedStyle.Render(timeStyle.Render(totalStr)))
+		} else {
+			line.WriteString(timeStyle.Render(totalStr))
+		}
+
+		// day cells
+		for ci, dk := range m.cols {
+			secs := row.dayTotals[dk]
+			cellStr := fmtDur(secs)
+			selected := isRow && m.cursorCol == ci+1
+			if selected {
+				line.WriteString(pivotSelectedStyle.Render(timeStyle.Render(cellStr)))
+			} else if secs == 0 {
+				line.WriteString(pivotZeroStyle.Render(timeStyle.Render(cellStr)))
+			} else {
+				line.WriteString(timeStyle.Render(cellStr))
+			}
+		}
+		sb.WriteString(line.String())
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(lipgloss.NewStyle().Faint(true).Render(sep))
+	sb.WriteString("\n")
+
+	// total row
+	var tl strings.Builder
+	tl.WriteString("  ")
+	tl.WriteString(pivotTotalStyle.Render(issueStyle(issueColW - 2).Render("Total")))
+	tl.WriteString(pivotTotalStyle.Render(timeStyle.Render(fmtDur(m.grandTotal))))
+	for i := range m.cols {
+		tl.WriteString(pivotTotalStyle.Render(timeStyle.Render(fmtDur(m.colTotals[i]))))
+	}
+	sb.WriteString(tl.String())
+	sb.WriteString("\n")
+
+	return sb.String()
 }
 
 // ── View ──────────────────────────────────────────────────────────────────────
 
 func (m summaryModel) View() string {
 	var sb strings.Builder
-	sb.WriteString(m.viewTable())
+	sb.WriteString(headerStyle.Render(m.title))
+	sb.WriteString("\n\n")
+	sb.WriteString(m.renderPivot())
+	sb.WriteString("\n")
+
+	if m.feedback != "" && m.state == stateTable {
+		if m.isError {
+			sb.WriteString(formErrorStyle.Render(m.feedback))
+		} else {
+			sb.WriteString(formSuccessStyle.Render(m.feedback))
+		}
+		sb.WriteString("\n\n")
+	}
+
 	switch m.state {
+	case stateTable:
+		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("↑/↓ satır • ←/→ sütun • enter detay • n yeni log • r yenile • q çıkış"))
+		sb.WriteString("\n")
+	case stateDetail:
+		sb.WriteString("\n")
+		sb.WriteString(m.viewDetail())
 	case stateForm:
 		sb.WriteString("\n")
 		sb.WriteString(m.viewForm())
@@ -544,35 +743,66 @@ func (m summaryModel) View() string {
 	case stateConfirmDelete:
 		sb.WriteString("\n")
 		sb.WriteString(m.viewConfirmDelete())
-	default:
-		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("↑/↓ select • n new • e edit • d delete • r refresh • q quit"))
-		sb.WriteString("\n")
 	}
 	return sb.String()
 }
 
-func (m summaryModel) viewTable() string {
+func (m summaryModel) viewDetail() string {
 	var sb strings.Builder
-	sb.WriteString(headerStyle.Render(m.title))
+	sb.WriteString(formActiveStyle.Render(m.detailTitle))
 	sb.WriteString("\n\n")
-	sb.WriteString(baseStyle.Render(m.viewport.View()))
-	sb.WriteString("\n")
-	for _, s := range m.subtotals {
-		sb.WriteString(subtotalStyle.Render(s))
-		sb.WriteString("\n")
+
+	timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	spentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Width(8)
+	descStyle := lipgloss.NewStyle().Faint(true)
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
+	summaryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+
+	if len(m.detailWorklogs) == 0 {
+		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("Bu hücrede worklog yok."))
+		sb.WriteString("\n\n")
 	}
-	sb.WriteString("\n")
-	sb.WriteString(totalStyle.Render(m.totalLine))
-	sb.WriteString("\n\n")
-	if m.feedback != "" && m.state == stateTable {
+
+	lastKey := ""
+	for i, wl := range m.detailWorklogs {
+		if wl.IssueKey != lastKey {
+			lastKey = wl.IssueKey
+			sb.WriteString(fmt.Sprintf("  %s  %s\n",
+				keyStyle.Render(wl.IssueKey),
+				summaryStyle.Render(truncate(wl.Summary, 60)),
+			))
+		}
+		prefix := "    "
+		if i == m.detailCursor {
+			prefix = "  " + pivotCursorStyle.Render("▶ ")
+		}
+		desc := jira.WorklogCommentText(&wl.Worklog)
+		if desc == "" {
+			desc = "─"
+		}
+		line := fmt.Sprintf("%s  %s  %s",
+			timeStyle.Render(wl.Worklog.Started.Format("15:04")),
+			spentStyle.Render(wl.Worklog.TimeSpent),
+			descStyle.Render(truncate(desc, 50)),
+		)
+		sb.WriteString(prefix + line + "\n")
+	}
+
+	if m.feedback != "" {
+		sb.WriteString("\n")
 		if m.isError {
 			sb.WriteString(formErrorStyle.Render(m.feedback))
 		} else {
 			sb.WriteString(formSuccessStyle.Render(m.feedback))
 		}
-		sb.WriteString("\n\n")
+		sb.WriteString("\n")
 	}
-	return sb.String()
+
+	sb.WriteString("\n")
+	sb.WriteString(lipgloss.NewStyle().Faint(true).Render("↑/↓ seç • e düzenle • d sil • n yeni • esc geri"))
+	sb.WriteString("\n")
+
+	return formBorderStyle.Render(sb.String())
 }
 
 func (m summaryModel) viewForm() string {
@@ -582,7 +812,7 @@ func (m summaryModel) viewForm() string {
 }
 
 func (m summaryModel) viewEditForm() string {
-	wl := m.currentWorklog()
+	wl := m.currentDetailWorklog()
 	title := "Edit Worklog"
 	if wl != nil {
 		title = fmt.Sprintf("Edit Worklog — %s (%s)", wl.IssueKey, wl.Worklog.ID)
@@ -624,7 +854,7 @@ func renderFormOverlay(title string, labels, hints []string, inputs []textinput.
 }
 
 func (m summaryModel) viewConfirmDelete() string {
-	wl := m.currentWorklog()
+	wl := m.currentDetailWorklog()
 	if wl == nil {
 		return ""
 	}
@@ -638,12 +868,9 @@ func (m summaryModel) viewConfirmDelete() string {
 	body := fmt.Sprintf(
 		"%s\n\n  %s  %s\n  %s  %s\n  %s  %s\n\n  Delete this worklog? This cannot be undone.\n  %s  %s\n\n  %s",
 		formActiveStyle.Render("Confirm delete"),
-		formLabelStyle.Render("Issue  :"),
-		wl.IssueKey,
-		formLabelStyle.Render("Started:"),
-		wl.Worklog.Started.Format("Mon Jan 2 15:04"),
-		formLabelStyle.Render("Spent  :"),
-		wl.Worklog.TimeSpent,
+		formLabelStyle.Render("Issue  :"), wl.IssueKey,
+		formLabelStyle.Render("Started:"), wl.Worklog.Started.Format("Mon Jan 2 15:04"),
+		formLabelStyle.Render("Spent  :"), wl.Worklog.TimeSpent,
 		cancel, del,
 		lipgloss.NewStyle().Faint(true).Render("←/→ select • enter confirm • y delete • n/esc cancel"),
 	)
@@ -657,17 +884,8 @@ func RunSummaryTable(worklogs []jira.WorklogWithIssue, title string, cbs Summary
 		return nil
 	}
 
-	m := summaryModel{
-		title: title,
-		cbs:   cbs,
-	}
+	m := summaryModel{title: title, cbs: cbs}
 	m.setWorklogs(worklogs)
-
-	const colWidth = 46
-	vp := viewport.New(colWidth*maxColsInView(len(m.days)), 15)
-	vp.SetHorizontalStep(colWidth)
-	m.viewport = vp
-	m.viewport.SetContent(m.renderContent())
 
 	var inputs [3]textinput.Model
 	for i := range inputs {
@@ -688,16 +906,5 @@ func RunSummaryTable(worklogs []jira.WorklogWithIssue, title string, cbs Summary
 	if sm, ok := finalModel.(summaryModel); ok && sm.feedback != "" && !sm.isError {
 		fmt.Println(sm.feedback)
 	}
-
 	return nil
-}
-
-func maxColsInView(n int) int {
-	if n < 2 {
-		return 2
-	}
-	if n > 4 {
-		return 4
-	}
-	return n
 }

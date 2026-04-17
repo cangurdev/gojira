@@ -156,9 +156,11 @@ func (c *Client) GetIssueWorklogs(issueKey string) ([]Worklog, error) {
 
 // WorklogWithIssue represents a worklog with its associated issue information
 type WorklogWithIssue struct {
-	Worklog  Worklog
-	IssueKey string
-	Summary  string
+	Worklog     Worklog
+	IssueKey    string
+	Summary     string
+	ProjectKey  string
+	ProjectName string
 }
 
 // GetUserWorklogsForWeek retrieves all worklogs for the current user for the current week
@@ -205,9 +207,11 @@ func (c *Client) GetUserWorklogsBetween(from, to time.Time) ([]WorklogWithIssue,
 			if worklog.Author.AccountID == currentUser.AccountID &&
 				!started.Before(from) && !started.After(endOfTo) {
 				result = append(result, WorklogWithIssue{
-					Worklog:  worklog,
-					IssueKey: issue.Key,
-					Summary:  issue.Fields.Summary,
+					Worklog:     worklog,
+					IssueKey:    issue.Key,
+					Summary:     issue.Fields.Summary,
+					ProjectKey:  issue.Fields.Project.Key,
+					ProjectName: issue.Fields.Project.Name,
 				})
 			}
 		}

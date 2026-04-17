@@ -77,6 +77,10 @@ type IssueFields struct {
 	Summary  string  `json:"summary"`
 	Status   Status  `json:"status"`
 	Assignee *User   `json:"assignee"` // Pointer for nullable field
+	Project  struct {
+		Key  string `json:"key"`
+		Name string `json:"name"`
+	} `json:"project"`
 }
 
 // Status represents an issue status
