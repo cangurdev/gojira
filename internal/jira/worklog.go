@@ -2,6 +2,7 @@ package jira
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -78,6 +79,67 @@ func (c *Client) AddWorklogWithStartTime(issueKey, timeSpent, startedTime, descr
 	}
 
 	return &response, nil
+}
+
+// UpdateWorklog replaces an existing worklog with new values
+func (c *Client) UpdateWorklog(issueKey, worklogID, timeSpent, startedTime, description string) (*WorklogResponse, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s/worklog/%s", issueKey, worklogID)
+
+	input := WorklogInput{
+		TimeSpent: timeSpent,
+		Started:   startedTime,
+	}
+
+	if description != "" {
+		input.Comment = &ADFDoc{
+			Type:    "doc",
+			Version: 1,
+			Content: []ADFContent{
+				{
+					Type: "paragraph",
+					Content: []ADFContent{
+						{Type: "text", Text: description},
+					},
+				},
+			},
+		}
+	}
+
+	var response WorklogResponse
+	if err := c.doRequest("PUT", path, input, &response); err != nil {
+		return nil, fmt.Errorf("failed to update worklog %s on issue %s: %w", worklogID, issueKey, err)
+	}
+	return &response, nil
+}
+
+// DeleteWorklog removes a worklog entry
+func (c *Client) DeleteWorklog(issueKey, worklogID string) error {
+	path := fmt.Sprintf("/rest/api/3/issue/%s/worklog/%s", issueKey, worklogID)
+	if err := c.doRequest("DELETE", path, nil, nil); err != nil {
+		return fmt.Errorf("failed to delete worklog %s on issue %s: %w", worklogID, issueKey, err)
+	}
+	return nil
+}
+
+// WorklogCommentText extracts plain text from a worklog's ADF comment.
+func WorklogCommentText(w *Worklog) string {
+	if w == nil || w.Comment == nil {
+		return ""
+	}
+	var sb strings.Builder
+	extractADFText(w.Comment.Content, &sb)
+	return strings.TrimSpace(sb.String())
+}
+
+func extractADFText(content []ADFContent, sb *strings.Builder) {
+	for _, c := range content {
+		if c.Type == "text" {
+			sb.WriteString(c.Text)
+		}
+		if len(c.Content) > 0 {
+			extractADFText(c.Content, sb)
+		}
+	}
 }
 
 // GetIssueWorklogs retrieves all worklogs for a specific issue
