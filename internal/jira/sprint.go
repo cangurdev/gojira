@@ -58,6 +58,18 @@ func (c *Client) GetTransitions(issueKey string) ([]Transition, error) {
 	return response.Transitions, nil
 }
 
+// DoTransition performs a transition by ID (no name matching)
+func (c *Client) DoTransition(issueKey, transitionID string) error {
+	body := map[string]interface{}{
+		"transition": map[string]string{"id": transitionID},
+	}
+	path := fmt.Sprintf("/rest/api/3/issue/%s/transitions", issueKey)
+	if err := c.doRequest("POST", path, body, nil); err != nil {
+		return fmt.Errorf("failed to transition %s: %w", issueKey, err)
+	}
+	return nil
+}
+
 // TransitionIssue moves an issue to the transition that matches the given name (case-insensitive partial match)
 func (c *Client) TransitionIssue(issueKey, transitionName string) (*Transition, error) {
 	transitions, err := c.GetTransitions(issueKey)
