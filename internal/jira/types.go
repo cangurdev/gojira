@@ -20,10 +20,10 @@ func (jt *JiraTime) UnmarshalJSON(b []byte) error {
 
 	// Try multiple timestamp formats
 	formats := []string{
-		"2006-01-02T15:04:05.000-0700",   // Jira format: 2026-01-21T08:30:00.000+0300
-		"2006-01-02T15:04:05.000Z0700",   // Alternative format
-		time.RFC3339,                      // Standard RFC3339: 2026-01-21T08:30:00+03:00
-		"2006-01-02T15:04:05Z07:00",      // Another common format
+		"2006-01-02T15:04:05.000-0700", // Jira format: 2026-01-21T08:30:00.000+0300
+		"2006-01-02T15:04:05.000Z0700", // Alternative format
+		time.RFC3339,                   // Standard RFC3339: 2026-01-21T08:30:00+03:00
+		"2006-01-02T15:04:05Z07:00",    // Another common format
 	}
 
 	var err error
@@ -74,13 +74,19 @@ type Issue struct {
 
 // IssueFields contains issue field data
 type IssueFields struct {
-	Summary  string  `json:"summary"`
-	Status   Status  `json:"status"`
-	Assignee *User   `json:"assignee"` // Pointer for nullable field
-	Project  struct {
+	Summary   string    `json:"summary"`
+	Status    Status    `json:"status"`
+	IssueType IssueType `json:"issuetype"`
+	Assignee  *User     `json:"assignee"` // Pointer for nullable field
+	Project   struct {
 		Key  string `json:"key"`
 		Name string `json:"name"`
 	} `json:"project"`
+}
+
+// IssueType represents Jira issue type information.
+type IssueType struct {
+	Name string `json:"name"`
 }
 
 // Status represents an issue status

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"gojira/internal/config"
+	"gojira/internal/git"
 	"gojira/internal/jira"
 	"gojira/internal/ui"
 )
@@ -20,6 +21,7 @@ var boardCmd = &cobra.Command{
 Issues are grouped by status into columns. Navigate with h/l (columns) and j/k (rows).
 
 Actions:
+  b   create branch for selected issue
   m   move (transition) selected issue
   w   log work on selected issue
   o   open selected issue in browser
@@ -106,6 +108,19 @@ func runBoardCommand(cmd *cobra.Command, args []string) error {
 		DoTransition:     client.DoTransition,
 		AddWorklog: func(issueKey, timeSpent, startTime, description string) (*jira.WorklogResponse, error) {
 			return client.AddWorklogWithStartTime(issueKey, normalizeTimeSpent(timeSpent), startTime, description)
+		},
+		CreateBranch: func(issue jira.Issue) (string, error) {
+			prefix := "feature"
+			if strings.EqualFold(issue.Fields.IssueType.Name, "bug") {
+				prefix = "fix"
+			}
+
+			branchName := fmt.Sprintf("%s/%s", prefix, strings.ToUpper(issue.Key))
+			if err := git.CreateAndCheckoutBranch(branchName); err != nil {
+				return "", err
+			}
+
+			return branchName, nil
 		},
 		OpenInBrowser: func(issueKey string) {
 			url := fmt.Sprintf("%s/browse/%s", strings.TrimRight(cfg.JiraURL, "/"), issueKey)

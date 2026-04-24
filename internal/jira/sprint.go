@@ -24,7 +24,7 @@ func (c *Client) GetActiveSprint(boardID int) (*Sprint, error) {
 
 // GetSprintIssues retrieves all issues in a sprint
 func (c *Client) GetSprintIssues(sprintID int) ([]Issue, error) {
-	path := fmt.Sprintf("/rest/agile/1.0/sprint/%d/issue?fields=key,summary,status,assignee", sprintID)
+	path := fmt.Sprintf("/rest/agile/1.0/sprint/%d/issue?fields=key,summary,status,assignee,issuetype", sprintID)
 
 	var response IssuesResponse
 	if err := c.doRequest("GET", path, nil, &response); err != nil {

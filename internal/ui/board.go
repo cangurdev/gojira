@@ -35,12 +35,13 @@ var (
 // BoardCallbacks wires TUI actions to Jira API calls. All functions run on a
 // goroutine via tea.Cmd — return errors as-is so the model can show them.
 type BoardCallbacks struct {
-	FetchIssues     func() ([]jira.Issue, error)
+	FetchIssues      func() ([]jira.Issue, error)
 	FetchTransitions func(issueKey string) ([]jira.Transition, error)
-	DoTransition    func(issueKey, transitionID string) error
-	AddWorklog      func(issueKey, timeSpent, startTime, description string) (*jira.WorklogResponse, error)
-	OpenInBrowser   func(issueKey string)
-	CurrentUserID   string
+	DoTransition     func(issueKey, transitionID string) error
+	AddWorklog       func(issueKey, timeSpent, startTime, description string) (*jira.WorklogResponse, error)
+	CreateBranch     func(issue jira.Issue) (string, error)
+	OpenInBrowser    func(issueKey string)
+	CurrentUserID    string
 }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -103,8 +104,9 @@ type boardTransitionsMsg struct {
 }
 
 type boardActionMsg struct {
-	ok  string
-	err error
+	ok      string
+	err     error
+	refresh bool
 }
 
 type boardClearStatusMsg time.Time
@@ -133,7 +135,7 @@ func (m boardModel) doTransitionCmd(issueKey, transitionID, transitionName strin
 		if err := fn(issueKey, transitionID); err != nil {
 			return boardActionMsg{err: err}
 		}
-		return boardActionMsg{ok: fmt.Sprintf("✓ %s → %s", issueKey, transitionName)}
+		return boardActionMsg{ok: fmt.Sprintf("✓ %s → %s", issueKey, transitionName), refresh: true}
 	}
 }
 
@@ -144,7 +146,23 @@ func (m boardModel) addWorklogCmd(issueKey, timeSpent, startTime string) tea.Cmd
 		if err != nil {
 			return boardActionMsg{err: err}
 		}
-		return boardActionMsg{ok: fmt.Sprintf("✓ Logged %s to %s", resp.TimeSpent, issueKey)}
+		return boardActionMsg{ok: fmt.Sprintf("✓ Logged %s to %s", resp.TimeSpent, issueKey), refresh: true}
+	}
+}
+
+func (m boardModel) createBranchCmd(issue jira.Issue) tea.Cmd {
+	fn := m.cbs.CreateBranch
+	return func() tea.Msg {
+		if fn == nil {
+			return boardActionMsg{err: fmt.Errorf("branch creation is not configured")}
+		}
+
+		branchName, err := fn(issue)
+		if err != nil {
+			return boardActionMsg{err: err}
+		}
+
+		return boardActionMsg{ok: fmt.Sprintf("✓ Created branch %s", branchName)}
 	}
 }
 
@@ -204,8 +222,11 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = msg.ok
 		m.isErr = false
-		// After mutating action, refetch issues to reflect new state
-		return m, tea.Batch(m.fetchIssues(), clearStatusAfter(3*time.Second))
+		if msg.refresh {
+			// After mutating actions, refetch issues to reflect new state.
+			return m, tea.Batch(m.fetchIssues(), clearStatusAfter(3*time.Second))
+		}
+		return m, clearStatusAfter(3 * time.Second)
 
 	case boardClearStatusMsg:
 		m.status = ""
@@ -299,6 +320,10 @@ func (m boardModel) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Opened %s", issue.Key)
 			m.isErr = false
 			return m, clearStatusAfter(2 * time.Second)
+		}
+	case "b":
+		if issue := m.currentIssue(); issue != nil {
+			return m, m.createBranchCmd(*issue)
 		}
 	case "m":
 		if issue := m.currentIssue(); issue != nil {
@@ -628,7 +653,7 @@ func (m boardModel) View() string {
 	}
 
 	// Hints
-	sb.WriteString(boardHintStyle.Render("h/l cols • j/k rows • pgup/pgdn page • m move • w worklog • o open • a mine • r refresh • ? help • q quit"))
+	sb.WriteString(boardHintStyle.Render("h/l cols • j/k rows • pgup/pgdn page • b branch • m move • w worklog • o open • a mine • r refresh • ? help • q quit"))
 	sb.WriteString("\n")
 
 	base := sb.String()
@@ -791,6 +816,7 @@ func (m boardModel) viewHelpOverlay() string {
 		"  g / G        jump to first / last card in column",
 		"",
 		"Actions:",
+		"  b            create branch (Bug: fix/KEY, others: feature/KEY)",
 		"  m            move (transition) selected issue",
 		"  w            log work on selected issue",
 		"  o            open selected issue in browser",
