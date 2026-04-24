@@ -32,4 +32,5 @@ func init() {
 	rootCmd.AddCommand(moveCmd)
 	rootCmd.AddCommand(timerCmd)
 	rootCmd.AddCommand(boardCmd)
+	rootCmd.AddCommand(configCmd)
 }

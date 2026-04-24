@@ -83,13 +83,15 @@ boards:
 
 ### Step 4: Configure Environment Variables
 
-Create a `.env` file in the directory where you'll run the tool:
+Use the interactive config command (recommended):
 
 ```bash
-cp .env.example .env
+gojira config
 ```
 
-Edit the `.env` file with your details:
+This command asks for required values and writes them to `~/.config/gojira/.env`.
+
+You can also set values manually:
 
 ```env
 JIRA_URL=https://your-domain.atlassian.net
