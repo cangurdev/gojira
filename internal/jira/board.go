@@ -17,6 +17,18 @@ func (c *Client) GetBoard(boardID int) (*Board, error) {
 	return &board, nil
 }
 
+// GetBoardConfiguration retrieves a board's column configuration.
+func (c *Client) GetBoardConfiguration(boardID int) (*BoardConfiguration, error) {
+	path := fmt.Sprintf("/rest/agile/1.0/board/%d/configuration", boardID)
+
+	var config BoardConfiguration
+	if err := c.doRequest("GET", path, nil, &config); err != nil {
+		return nil, fmt.Errorf("failed to get board configuration %d: %w", boardID, err)
+	}
+
+	return &config, nil
+}
+
 // GetBoardIssues retrieves all non-done issues on a board (no assignee filter).
 // Uses statusCategory to exclude anything Jira classifies as done (Done, Closed,
 // Resolved, etc.), so kanban boards don't render a huge Done column.

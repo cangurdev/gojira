@@ -2,6 +2,7 @@ package jira
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -106,6 +107,131 @@ func (c *Client) TransitionIssue(issueKey, transitionName string) (*Transition, 
 	}
 	return nil, fmt.Errorf("no transition matching %q found for %s\nAvailable: %s",
 		transitionName, issueKey, strings.Join(names, ", "))
+}
+
+// TransitionIssueToBoardColumn moves an issue to the transition that targets
+// one of the statuses configured in the selected board column.
+func (c *Client) TransitionIssueToBoardColumn(issueKey string, column BoardColumn) (*Transition, error) {
+	transitions, err := c.GetTransitions(issueKey)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := MatchTransitionsToBoardColumns([]BoardColumn{column}, transitions, "")
+	if len(matches) > 0 {
+		transition := matches[0].Transition
+		if err := c.DoTransition(issueKey, transition.ID); err != nil {
+			return nil, err
+		}
+		return &transition, nil
+	}
+
+	statusNames := make([]string, 0, len(column.Statuses))
+	for _, status := range column.Statuses {
+		if status.Name != "" {
+			statusNames = append(statusNames, strings.ToLower(status.Name))
+		}
+	}
+
+	available := make([]string, 0, len(transitions))
+	for _, transition := range transitions {
+		label := transition.Name
+		if transition.To.Name != "" {
+			label = fmt.Sprintf("%s → %s", transition.Name, transition.To.Name)
+		}
+		available = append(available, label)
+	}
+
+	return nil, fmt.Errorf(
+		"no transition from %s matches board column %q (statuses: %s)\nAvailable: %s",
+		issueKey,
+		column.Name,
+		strings.Join(statusNames, ", "),
+		strings.Join(available, ", "),
+	)
+}
+
+// MatchTransitionsToBoardColumns returns board columns that have a matching
+// available transition. currentStatusName can be provided to exclude the
+// current column from the result.
+func MatchTransitionsToBoardColumns(columns []BoardColumn, transitions []Transition, currentStatusName string) []BoardColumnTransition {
+	currentStatusName = strings.ToLower(strings.TrimSpace(currentStatusName))
+	matches := make([]BoardColumnTransition, 0, len(columns))
+	usedTransitionIDs := make(map[string]bool)
+
+	for _, column := range columns {
+		statusIDs := make([]string, 0, len(column.Statuses))
+		statusNames := make([]string, 0, len(column.Statuses))
+		isCurrentColumn := false
+
+		for _, status := range column.Statuses {
+			if status.ID != "" {
+				statusIDs = append(statusIDs, status.ID)
+			}
+			if status.Name != "" {
+				normalized := strings.ToLower(status.Name)
+				statusNames = append(statusNames, normalized)
+				if currentStatusName != "" && normalized == currentStatusName {
+					isCurrentColumn = true
+				}
+			}
+		}
+
+		if isCurrentColumn {
+			continue
+		}
+
+		matched := false
+		for _, transition := range transitions {
+			if usedTransitionIDs[transition.ID] {
+				continue
+			}
+			if transition.To.ID != "" && slices.Contains(statusIDs, transition.To.ID) {
+				matches = append(matches, BoardColumnTransition{Column: column, Transition: transition})
+				usedTransitionIDs[transition.ID] = true
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+
+		for _, transition := range transitions {
+			if usedTransitionIDs[transition.ID] {
+				continue
+			}
+			targetStatusName := strings.ToLower(transition.To.Name)
+			if targetStatusName != "" && slices.Contains(statusNames, targetStatusName) {
+				matches = append(matches, BoardColumnTransition{Column: column, Transition: transition})
+				usedTransitionIDs[transition.ID] = true
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+
+		columnName := strings.ToLower(column.Name)
+		if columnName == "" {
+			continue
+		}
+
+		for _, transition := range transitions {
+			if usedTransitionIDs[transition.ID] {
+				continue
+			}
+			transitionName := strings.ToLower(transition.Name)
+			if transitionName == columnName || strings.Contains(transitionName, columnName) {
+				matches = append(matches, BoardColumnTransition{Column: column, Transition: transition})
+				usedTransitionIDs[transition.ID] = true
+				break
+			}
+		}
+	}
+
+	return matches
 }
 
 // SearchIssuesByJQL searches for issues using JQL (Jira Query Language)

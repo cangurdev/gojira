@@ -6,7 +6,7 @@ A command-line interface tool for interacting with Jira, built with Go using the
 
 - **List Sprint Tasks**: View all tasks assigned to you from the active sprint of a selected board
 - **Log Work**: Log time spent on specific issues
-- **Move Issues**: Transition issues to a new status using partial name matching
+- **Move Issues**: Transition issues to a new status with partial matching or interactive board column selection
 - **Interactive Board Selection**: Automatically prompts for board selection when multiple boards are configured
 - **Table Output**: Clean, formatted table display for issue lists
 
@@ -183,28 +183,36 @@ Worklog ID: 12345
 
 ### Move Issue
 
-Transition an issue to a new status using a partial name match:
+Transition an issue to a new status, or choose a board column interactively:
 
 ```bash
-gojira move <issue-key> <status>
+gojira move [issue-key] [status]
 ```
 
-If the issue key is omitted, it is inferred from the current git branch name.
+If the issue key is omitted, it is inferred from the current git branch name. If
+the status is omitted, the tool asks you to pick one of the selected board's
+columns and moves the issue to a matching transition for that column.
 
 **Examples:**
 
 ```bash
+# Select a target board column interactively
+gojira move PROJ-123
+
 # Move to "In Progress"
 gojira move PROJ-123 progress
 
 # Move to "In Review"
 gojira move PROJ-123 review
 
+# Infer issue key from branch and select column interactively
+gojira move
+
 # Infer issue key from branch (e.g. feature/PROJ-123)
 gojira move test
 ```
 
-The status argument is matched case-insensitively. If no match is found, the available transitions are listed.
+The status argument is matched case-insensitively. If no match is found, the available transitions are listed. Interactive column selection uses the board's configured columns and mapped statuses.
 
 **Output:**
 

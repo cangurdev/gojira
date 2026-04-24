@@ -80,6 +80,11 @@ func runBoardCommand(cmd *cobra.Command, args []string) error {
 	isKanban := strings.ToLower(selected.Type) == "kanban"
 	title := selected.Name
 
+	boardConfig, err := client.GetBoardConfiguration(selected.ID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch board configuration: %w", err)
+	}
+
 	fetchIssues := func() ([]jira.Issue, error) {
 		if isKanban {
 			return client.GetBoardIssues(selected.ID)
@@ -127,6 +132,7 @@ func runBoardCommand(cmd *cobra.Command, args []string) error {
 			_ = openURL(url)
 		},
 		CurrentUserID: currentUser.AccountID,
+		BoardColumns:  boardConfig.ColumnConfig.Columns,
 	}
 
 	return ui.RunBoard(title, initialIssues, cbs)

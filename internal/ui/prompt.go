@@ -30,6 +30,37 @@ func SelectBoard(boards []jira.Board) (*jira.Board, error) {
 	return &boards[idx], nil
 }
 
+// SelectBoardColumn prompts the user to select a board column from a list.
+func SelectBoardColumn(columns []jira.BoardColumn) (*jira.BoardColumn, error) {
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("no board columns available")
+	}
+
+	items := make([]string, len(columns))
+	for i, column := range columns {
+		statusNames := make([]string, 0, len(column.Statuses))
+		for _, status := range column.Statuses {
+			if status.Name != "" {
+				statusNames = append(statusNames, status.Name)
+			}
+		}
+
+		items[i] = column.Name
+		if len(statusNames) > 0 {
+			items[i] = fmt.Sprintf("%s (%s)", column.Name, strings.Join(statusNames, ", "))
+		}
+	}
+
+	idx, err := runSelect("Select a target column", items)
+	if err != nil {
+		return nil, fmt.Errorf("column selection cancelled: %w", err)
+	}
+	if idx < 0 {
+		return nil, fmt.Errorf("column selection cancelled")
+	}
+	return &columns[idx], nil
+}
+
 // SelectTemplate prompts the user to select a template from a list
 func SelectTemplate(templates []jira.Template) (*jira.Template, error) {
 	if len(templates) == 0 {

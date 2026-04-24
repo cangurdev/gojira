@@ -42,6 +42,7 @@ type BoardCallbacks struct {
 	CreateBranch     func(issue jira.Issue) (string, error)
 	OpenInBrowser    func(issueKey string)
 	CurrentUserID    string
+	BoardColumns     []jira.BoardColumn
 }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -60,6 +61,11 @@ type boardColumn struct {
 	cards  []jira.Issue
 }
 
+type boardMoveOption struct {
+	label      string
+	transition jira.Transition
+}
+
 type boardModel struct {
 	title string
 	cbs   BoardCallbacks
@@ -75,8 +81,8 @@ type boardModel struct {
 	mode boardMode
 
 	// move overlay
-	transitions      []jira.Transition
-	transitionCursor int
+	moveOptions []boardMoveOption
+	moveCursor  int
 
 	// worklog overlay
 	wlInputs  [2]textinput.Model
@@ -204,11 +210,11 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mode = boardModeNormal
 			return m, clearStatusAfter(4 * time.Second)
 		}
-		m.transitions = msg.transitions
-		m.transitionCursor = 0
-		if len(m.transitions) == 0 {
+		m.moveOptions = m.buildMoveOptions(msg.transitions)
+		m.moveCursor = 0
+		if len(m.moveOptions) == 0 {
 			m.mode = boardModeNormal
-			m.status = "No transitions available"
+			m.status = "No matching target columns available"
 			m.isErr = true
 			return m, clearStatusAfter(3 * time.Second)
 		}
@@ -328,7 +334,7 @@ func (m boardModel) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "m":
 		if issue := m.currentIssue(); issue != nil {
 			m.mode = boardModeMove
-			m.transitions = nil
+			m.moveOptions = nil
 			m.status = "Loading transitions..."
 			return m, m.fetchTransitions(issue.Key)
 		}
@@ -360,22 +366,23 @@ func (m boardModel) updateMove(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		return m, nil
 	case "up", "k":
-		if m.transitionCursor > 0 {
-			m.transitionCursor--
+		if m.moveCursor > 0 {
+			m.moveCursor--
 		}
 	case "down", "j":
-		if m.transitionCursor < len(m.transitions)-1 {
-			m.transitionCursor++
+		if m.moveCursor < len(m.moveOptions)-1 {
+			m.moveCursor++
 		}
 	case "enter", " ":
 		issue := m.currentIssue()
-		if issue == nil || len(m.transitions) == 0 {
+		if issue == nil || len(m.moveOptions) == 0 {
 			m.mode = boardModeNormal
 			return m, nil
 		}
-		t := m.transitions[m.transitionCursor]
+		option := m.moveOptions[m.moveCursor]
+		t := option.transition
 		m.mode = boardModeNormal
-		return m, m.doTransitionCmd(issue.Key, t.ID, t.Name)
+		return m, m.doTransitionCmd(issue.Key, t.ID, option.label)
 	}
 	return m, nil
 }
@@ -606,6 +613,37 @@ func (m boardModel) currentIssue() *jira.Issue {
 	return &col.cards[m.cursorRow]
 }
 
+func (m boardModel) buildMoveOptions(transitions []jira.Transition) []boardMoveOption {
+	issue := m.currentIssue()
+	if issue == nil {
+		return nil
+	}
+
+	columns := m.cbs.BoardColumns
+	if len(columns) == 0 {
+		columns = make([]jira.BoardColumn, 0, len(m.columns))
+		for _, col := range m.columns {
+			columns = append(columns, jira.BoardColumn{
+				Name: col.status,
+				Statuses: []jira.BoardColumnStatus{
+					{Name: col.status},
+				},
+			})
+		}
+	}
+
+	matches := jira.MatchTransitionsToBoardColumns(columns, transitions, issue.Fields.Status.Name)
+	options := make([]boardMoveOption, 0, len(matches))
+	for _, match := range matches {
+		options = append(options, boardMoveOption{
+			label:      match.Column.Name,
+			transition: match.Transition,
+		})
+	}
+
+	return options
+}
+
 func initials(name string) string {
 	if name == "" {
 		return "--"
@@ -762,14 +800,14 @@ func (m boardModel) viewMoveOverlay() string {
 	var sb strings.Builder
 	sb.WriteString(boardTitleStyle.Render(fmt.Sprintf("Move %s", issue.Key)))
 	sb.WriteString("\n\n")
-	if len(m.transitions) == 0 {
+	if len(m.moveOptions) == 0 {
 		sb.WriteString(boardHintStyle.Render("Loading..."))
 	} else {
-		for i, t := range m.transitions {
-			if i == m.transitionCursor {
-				sb.WriteString(selectCursorStyle.Render("▶ " + t.Name))
+		for i, option := range m.moveOptions {
+			if i == m.moveCursor {
+				sb.WriteString(selectCursorStyle.Render("▶ " + option.label))
 			} else {
-				sb.WriteString(selectItemStyle.Render("  " + t.Name))
+				sb.WriteString(selectItemStyle.Render("  " + option.label))
 			}
 			sb.WriteString("\n")
 		}

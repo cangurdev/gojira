@@ -47,6 +47,34 @@ type Board struct {
 	} `json:"location"`
 }
 
+// BoardConfiguration represents the Agile board configuration response.
+type BoardConfiguration struct {
+	ColumnConfig BoardColumnConfig `json:"columnConfig"`
+}
+
+// BoardColumnConfig contains board columns.
+type BoardColumnConfig struct {
+	Columns []BoardColumn `json:"columns"`
+}
+
+// BoardColumn represents a single Jira board column and its mapped statuses.
+type BoardColumn struct {
+	Name     string              `json:"name"`
+	Statuses []BoardColumnStatus `json:"statuses"`
+}
+
+// BoardColumnStatus represents a Jira status mapped into a board column.
+type BoardColumnStatus struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// BoardColumnTransition pairs a board column with a matching transition.
+type BoardColumnTransition struct {
+	Column     BoardColumn
+	Transition Transition
+}
+
 // Sprint represents a Jira sprint
 type Sprint struct {
 	ID        int      `json:"id"`
@@ -174,6 +202,13 @@ type ErrorResponse struct {
 
 // Transition represents a Jira issue transition
 type Transition struct {
+	ID   string           `json:"id"`
+	Name string           `json:"name"`
+	To   TransitionStatus `json:"to"`
+}
+
+// TransitionStatus describes the destination status of a Jira transition.
+type TransitionStatus struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
