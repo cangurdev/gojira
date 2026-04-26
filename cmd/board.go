@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"gojira/internal/config"
+	"gojira/internal/git"
 	"gojira/internal/jira"
 	"gojira/internal/ui"
 )
@@ -20,6 +21,7 @@ var boardCmd = &cobra.Command{
 Issues are grouped by status into columns. Navigate with h/l (columns) and j/k (rows).
 
 Actions:
+  b   create branch for selected issue
   m   move (transition) selected issue
   w   log work on selected issue
   o   open selected issue in browser
@@ -78,6 +80,11 @@ func runBoardCommand(cmd *cobra.Command, args []string) error {
 	isKanban := strings.ToLower(selected.Type) == "kanban"
 	title := selected.Name
 
+	boardConfig, err := client.GetBoardConfiguration(selected.ID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch board configuration: %w", err)
+	}
+
 	fetchIssues := func() ([]jira.Issue, error) {
 		if isKanban {
 			return client.GetBoardIssues(selected.ID)
@@ -107,11 +114,25 @@ func runBoardCommand(cmd *cobra.Command, args []string) error {
 		AddWorklog: func(issueKey, timeSpent, startTime, description string) (*jira.WorklogResponse, error) {
 			return client.AddWorklogWithStartTime(issueKey, normalizeTimeSpent(timeSpent), startTime, description)
 		},
+		CreateBranch: func(issue jira.Issue) (string, error) {
+			prefix := "feature"
+			if strings.EqualFold(issue.Fields.IssueType.Name, "bug") {
+				prefix = "fix"
+			}
+
+			branchName := fmt.Sprintf("%s/%s", prefix, strings.ToUpper(issue.Key))
+			if err := git.CreateAndCheckoutBranch(branchName); err != nil {
+				return "", err
+			}
+
+			return branchName, nil
+		},
 		OpenInBrowser: func(issueKey string) {
 			url := fmt.Sprintf("%s/browse/%s", strings.TrimRight(cfg.JiraURL, "/"), issueKey)
 			_ = openURL(url)
 		},
 		CurrentUserID: currentUser.AccountID,
+		BoardColumns:  boardConfig.ColumnConfig.Columns,
 	}
 
 	return ui.RunBoard(title, initialIssues, cbs)

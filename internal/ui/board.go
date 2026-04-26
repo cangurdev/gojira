@@ -35,12 +35,14 @@ var (
 // BoardCallbacks wires TUI actions to Jira API calls. All functions run on a
 // goroutine via tea.Cmd — return errors as-is so the model can show them.
 type BoardCallbacks struct {
-	FetchIssues     func() ([]jira.Issue, error)
+	FetchIssues      func() ([]jira.Issue, error)
 	FetchTransitions func(issueKey string) ([]jira.Transition, error)
-	DoTransition    func(issueKey, transitionID string) error
-	AddWorklog      func(issueKey, timeSpent, startTime, description string) (*jira.WorklogResponse, error)
-	OpenInBrowser   func(issueKey string)
-	CurrentUserID   string
+	DoTransition     func(issueKey, transitionID string) error
+	AddWorklog       func(issueKey, timeSpent, startTime, description string) (*jira.WorklogResponse, error)
+	CreateBranch     func(issue jira.Issue) (string, error)
+	OpenInBrowser    func(issueKey string)
+	CurrentUserID    string
+	BoardColumns     []jira.BoardColumn
 }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -59,6 +61,11 @@ type boardColumn struct {
 	cards  []jira.Issue
 }
 
+type boardMoveOption struct {
+	label      string
+	transition jira.Transition
+}
+
 type boardModel struct {
 	title string
 	cbs   BoardCallbacks
@@ -74,8 +81,8 @@ type boardModel struct {
 	mode boardMode
 
 	// move overlay
-	transitions      []jira.Transition
-	transitionCursor int
+	moveOptions []boardMoveOption
+	moveCursor  int
 
 	// worklog overlay
 	wlInputs  [2]textinput.Model
@@ -103,8 +110,9 @@ type boardTransitionsMsg struct {
 }
 
 type boardActionMsg struct {
-	ok  string
-	err error
+	ok      string
+	err     error
+	refresh bool
 }
 
 type boardClearStatusMsg time.Time
@@ -133,7 +141,7 @@ func (m boardModel) doTransitionCmd(issueKey, transitionID, transitionName strin
 		if err := fn(issueKey, transitionID); err != nil {
 			return boardActionMsg{err: err}
 		}
-		return boardActionMsg{ok: fmt.Sprintf("✓ %s → %s", issueKey, transitionName)}
+		return boardActionMsg{ok: fmt.Sprintf("✓ %s → %s", issueKey, transitionName), refresh: true}
 	}
 }
 
@@ -144,7 +152,23 @@ func (m boardModel) addWorklogCmd(issueKey, timeSpent, startTime string) tea.Cmd
 		if err != nil {
 			return boardActionMsg{err: err}
 		}
-		return boardActionMsg{ok: fmt.Sprintf("✓ Logged %s to %s", resp.TimeSpent, issueKey)}
+		return boardActionMsg{ok: fmt.Sprintf("✓ Logged %s to %s", resp.TimeSpent, issueKey), refresh: true}
+	}
+}
+
+func (m boardModel) createBranchCmd(issue jira.Issue) tea.Cmd {
+	fn := m.cbs.CreateBranch
+	return func() tea.Msg {
+		if fn == nil {
+			return boardActionMsg{err: fmt.Errorf("branch creation is not configured")}
+		}
+
+		branchName, err := fn(issue)
+		if err != nil {
+			return boardActionMsg{err: err}
+		}
+
+		return boardActionMsg{ok: fmt.Sprintf("✓ Created branch %s", branchName)}
 	}
 }
 
@@ -186,11 +210,11 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mode = boardModeNormal
 			return m, clearStatusAfter(4 * time.Second)
 		}
-		m.transitions = msg.transitions
-		m.transitionCursor = 0
-		if len(m.transitions) == 0 {
+		m.moveOptions = m.buildMoveOptions(msg.transitions)
+		m.moveCursor = 0
+		if len(m.moveOptions) == 0 {
 			m.mode = boardModeNormal
-			m.status = "No transitions available"
+			m.status = "No matching target columns available"
 			m.isErr = true
 			return m, clearStatusAfter(3 * time.Second)
 		}
@@ -204,8 +228,11 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = msg.ok
 		m.isErr = false
-		// After mutating action, refetch issues to reflect new state
-		return m, tea.Batch(m.fetchIssues(), clearStatusAfter(3*time.Second))
+		if msg.refresh {
+			// After mutating actions, refetch issues to reflect new state.
+			return m, tea.Batch(m.fetchIssues(), clearStatusAfter(3*time.Second))
+		}
+		return m, clearStatusAfter(3 * time.Second)
 
 	case boardClearStatusMsg:
 		m.status = ""
@@ -300,10 +327,14 @@ func (m boardModel) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isErr = false
 			return m, clearStatusAfter(2 * time.Second)
 		}
+	case "b":
+		if issue := m.currentIssue(); issue != nil {
+			return m, m.createBranchCmd(*issue)
+		}
 	case "m":
 		if issue := m.currentIssue(); issue != nil {
 			m.mode = boardModeMove
-			m.transitions = nil
+			m.moveOptions = nil
 			m.status = "Loading transitions..."
 			return m, m.fetchTransitions(issue.Key)
 		}
@@ -335,22 +366,23 @@ func (m boardModel) updateMove(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		return m, nil
 	case "up", "k":
-		if m.transitionCursor > 0 {
-			m.transitionCursor--
+		if m.moveCursor > 0 {
+			m.moveCursor--
 		}
 	case "down", "j":
-		if m.transitionCursor < len(m.transitions)-1 {
-			m.transitionCursor++
+		if m.moveCursor < len(m.moveOptions)-1 {
+			m.moveCursor++
 		}
 	case "enter", " ":
 		issue := m.currentIssue()
-		if issue == nil || len(m.transitions) == 0 {
+		if issue == nil || len(m.moveOptions) == 0 {
 			m.mode = boardModeNormal
 			return m, nil
 		}
-		t := m.transitions[m.transitionCursor]
+		option := m.moveOptions[m.moveCursor]
+		t := option.transition
 		m.mode = boardModeNormal
-		return m, m.doTransitionCmd(issue.Key, t.ID, t.Name)
+		return m, m.doTransitionCmd(issue.Key, t.ID, option.label)
 	}
 	return m, nil
 }
@@ -581,6 +613,37 @@ func (m boardModel) currentIssue() *jira.Issue {
 	return &col.cards[m.cursorRow]
 }
 
+func (m boardModel) buildMoveOptions(transitions []jira.Transition) []boardMoveOption {
+	issue := m.currentIssue()
+	if issue == nil {
+		return nil
+	}
+
+	columns := m.cbs.BoardColumns
+	if len(columns) == 0 {
+		columns = make([]jira.BoardColumn, 0, len(m.columns))
+		for _, col := range m.columns {
+			columns = append(columns, jira.BoardColumn{
+				Name: col.status,
+				Statuses: []jira.BoardColumnStatus{
+					{Name: col.status},
+				},
+			})
+		}
+	}
+
+	matches := jira.MatchTransitionsToBoardColumns(columns, transitions, issue.Fields.Status.Name)
+	options := make([]boardMoveOption, 0, len(matches))
+	for _, match := range matches {
+		options = append(options, boardMoveOption{
+			label:      match.Column.Name,
+			transition: match.Transition,
+		})
+	}
+
+	return options
+}
+
 func initials(name string) string {
 	if name == "" {
 		return "--"
@@ -628,7 +691,7 @@ func (m boardModel) View() string {
 	}
 
 	// Hints
-	sb.WriteString(boardHintStyle.Render("h/l cols • j/k rows • pgup/pgdn page • m move • w worklog • o open • a mine • r refresh • ? help • q quit"))
+	sb.WriteString(boardHintStyle.Render("h/l cols • j/k rows • pgup/pgdn page • b branch • m move • w worklog • o open • a mine • r refresh • ? help • q quit"))
 	sb.WriteString("\n")
 
 	base := sb.String()
@@ -737,14 +800,14 @@ func (m boardModel) viewMoveOverlay() string {
 	var sb strings.Builder
 	sb.WriteString(boardTitleStyle.Render(fmt.Sprintf("Move %s", issue.Key)))
 	sb.WriteString("\n\n")
-	if len(m.transitions) == 0 {
+	if len(m.moveOptions) == 0 {
 		sb.WriteString(boardHintStyle.Render("Loading..."))
 	} else {
-		for i, t := range m.transitions {
-			if i == m.transitionCursor {
-				sb.WriteString(selectCursorStyle.Render("▶ " + t.Name))
+		for i, option := range m.moveOptions {
+			if i == m.moveCursor {
+				sb.WriteString(selectCursorStyle.Render("▶ " + option.label))
 			} else {
-				sb.WriteString(selectItemStyle.Render("  " + t.Name))
+				sb.WriteString(selectItemStyle.Render("  " + option.label))
 			}
 			sb.WriteString("\n")
 		}
@@ -791,6 +854,7 @@ func (m boardModel) viewHelpOverlay() string {
 		"  g / G        jump to first / last card in column",
 		"",
 		"Actions:",
+		"  b            create branch (Bug: fix/KEY, others: feature/KEY)",
 		"  m            move (transition) selected issue",
 		"  w            log work on selected issue",
 		"  o            open selected issue in browser",

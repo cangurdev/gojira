@@ -7,6 +7,21 @@ import (
 	"strings"
 )
 
+// CreateAndCheckoutBranch creates a new local branch and checks it out.
+func CreateAndCheckoutBranch(branchName string) error {
+	branchName = strings.TrimSpace(branchName)
+	if branchName == "" {
+		return fmt.Errorf("branch name cannot be empty")
+	}
+
+	cmd := exec.Command("git", "switch", "-c", branchName)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to create branch %q: %s", branchName, strings.TrimSpace(string(output)))
+	}
+
+	return nil
+}
+
 // GetCurrentBranch returns the current git branch name
 func GetCurrentBranch() (string, error) {
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")

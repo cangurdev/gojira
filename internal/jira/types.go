@@ -20,10 +20,10 @@ func (jt *JiraTime) UnmarshalJSON(b []byte) error {
 
 	// Try multiple timestamp formats
 	formats := []string{
-		"2006-01-02T15:04:05.000-0700",   // Jira format: 2026-01-21T08:30:00.000+0300
-		"2006-01-02T15:04:05.000Z0700",   // Alternative format
-		time.RFC3339,                      // Standard RFC3339: 2026-01-21T08:30:00+03:00
-		"2006-01-02T15:04:05Z07:00",      // Another common format
+		"2006-01-02T15:04:05.000-0700", // Jira format: 2026-01-21T08:30:00.000+0300
+		"2006-01-02T15:04:05.000Z0700", // Alternative format
+		time.RFC3339,                   // Standard RFC3339: 2026-01-21T08:30:00+03:00
+		"2006-01-02T15:04:05Z07:00",    // Another common format
 	}
 
 	var err error
@@ -45,6 +45,34 @@ type Board struct {
 	Location struct {
 		ProjectKey string `json:"projectKey"`
 	} `json:"location"`
+}
+
+// BoardConfiguration represents the Agile board configuration response.
+type BoardConfiguration struct {
+	ColumnConfig BoardColumnConfig `json:"columnConfig"`
+}
+
+// BoardColumnConfig contains board columns.
+type BoardColumnConfig struct {
+	Columns []BoardColumn `json:"columns"`
+}
+
+// BoardColumn represents a single Jira board column and its mapped statuses.
+type BoardColumn struct {
+	Name     string              `json:"name"`
+	Statuses []BoardColumnStatus `json:"statuses"`
+}
+
+// BoardColumnStatus represents a Jira status mapped into a board column.
+type BoardColumnStatus struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// BoardColumnTransition pairs a board column with a matching transition.
+type BoardColumnTransition struct {
+	Column     BoardColumn
+	Transition Transition
 }
 
 // Sprint represents a Jira sprint
@@ -74,13 +102,19 @@ type Issue struct {
 
 // IssueFields contains issue field data
 type IssueFields struct {
-	Summary  string  `json:"summary"`
-	Status   Status  `json:"status"`
-	Assignee *User   `json:"assignee"` // Pointer for nullable field
-	Project  struct {
+	Summary   string    `json:"summary"`
+	Status    Status    `json:"status"`
+	IssueType IssueType `json:"issuetype"`
+	Assignee  *User     `json:"assignee"` // Pointer for nullable field
+	Project   struct {
 		Key  string `json:"key"`
 		Name string `json:"name"`
 	} `json:"project"`
+}
+
+// IssueType represents Jira issue type information.
+type IssueType struct {
+	Name string `json:"name"`
 }
 
 // Status represents an issue status
@@ -168,6 +202,13 @@ type ErrorResponse struct {
 
 // Transition represents a Jira issue transition
 type Transition struct {
+	ID   string           `json:"id"`
+	Name string           `json:"name"`
+	To   TransitionStatus `json:"to"`
+}
+
+// TransitionStatus describes the destination status of a Jira transition.
+type TransitionStatus struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
