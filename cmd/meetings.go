@@ -15,6 +15,7 @@ var meetingsStartTime string
 var meetingsDay int
 var meetingsMonth int
 var meetingsDescription string
+var meetingsDayRange string // Format: "20 25" - start and end days
 
 var meetingsCmd = &cobra.Command{
 	Use:   "m [board_key] [type] [time_spent]",
@@ -31,6 +32,7 @@ Example:
   gojira m proj d --day 15 --start 10:45  		# Use day 15 of current month at 10:45
   gojira m proj d --month 2 --day 3       		# Use February 3 of current year, hour from template
   gojira m proj d --month 2 --day 3 --start 10:45  # Use February 3 at 10:45
+  gojira m proj d 5m -r 20 25             		# Log same worklog for days 20-25 of current month
 
 Arguments:
   board_key   - Board key from templates.yaml (e.g., proj, atom)
@@ -41,7 +43,9 @@ Flags:
   -s, --start     - Override start time (e.g., 10:45 or "2026-02-03 10:45")
   -d, --day       - Override day of month (e.g., 15); uses template start_time for hour
   -m, --month     - Override month (e.g., 2 for February); uses current year
-  --desc          - Override description (overrides template description)`,
+  --desc          - Override description (overrides template description)
+  -r, --range     - Day range to log (e.g., "20 25" logs for days 20 through 25 inclusive)
+`,
 	Args: cobra.RangeArgs(2, 3),
 	RunE: runMeetingsCommand,
 }
@@ -51,6 +55,7 @@ func init() {
 	meetingsCmd.Flags().IntVarP(&meetingsDay, "day", "d", 0, "Override day of month (e.g., 15)")
 	meetingsCmd.Flags().IntVarP(&meetingsMonth, "month", "m", 0, "Override month of current year (e.g., 2 for February)")
 	meetingsCmd.Flags().StringVar(&meetingsDescription, "desc", "", "Override description (overrides template description)")
+	meetingsCmd.Flags().StringVarP(&meetingsDayRange, "range", "r", "", "Day range to log (e.g., \"20 25\" logs for days 20 through 25 inclusive)")
 }
 
 func runMeetingsCommand(cmd *cobra.Command, args []string) error {
@@ -152,7 +157,58 @@ func runMeetingsCommand(cmd *cobra.Command, args []string) error {
 		description = meetingsDescription
 	}
 
-	// Add worklog
+	// Parse day range if provided
+	var daysToLog []int
+	if meetingsDayRange != "" {
+		var startDay, endDay int
+		_, err := fmt.Sscanf(meetingsDayRange, "%d %d", &startDay, &endDay)
+		if err != nil {
+			return fmt.Errorf("invalid day range format %q: use \"START END\" (e.g., \"20 25\")", meetingsDayRange)
+		}
+		if startDay < 1 || startDay > 31 || endDay < 1 || endDay > 31 || startDay > endDay {
+			return fmt.Errorf("invalid day range: start=%d, end=%d (must be 1-31 and start <= end)", startDay, endDay)
+		}
+		for d := startDay; d <= endDay; d++ {
+			daysToLog = append(daysToLog, d)
+		}
+	}
+
+	// Log worklog(s)
+	if len(daysToLog) > 0 {
+		// Log for each day in range
+		hour, minute := now.Hour(), now.Minute()
+		if matchedTemplate.StartTime != "" {
+			if t, err := time.ParseInLocation("15:04", matchedTemplate.StartTime, time.Local); err == nil {
+				hour, minute = t.Hour(), t.Minute()
+			}
+		}
+
+		fmt.Printf("Logging %d days (days %s)...\n", len(daysToLog), meetingsDayRange)
+
+		successCount := 0
+		for _, day := range daysToLog {
+			fullTime := time.Date(now.Year(), effectiveMonth, day, hour, minute, 0, 0, time.Local)
+			dayStartTime := fullTime.Format("2006-01-02T15:04:05.000-0700")
+
+			response, err := client.AddWorklogWithStartTime(
+				matchedTemplate.IssueKey,
+				normalizeTimeSpent(timeSpent),
+				dayStartTime,
+				description,
+			)
+			if err != nil {
+				fmt.Printf("✗ Failed to log day %d: %v\n", day, err)
+				continue
+			}
+			fmt.Printf("✓ Day %d: Logged %s to %s\n", day, response.TimeSpent, matchedTemplate.IssueKey)
+			successCount++
+		}
+
+		fmt.Printf("\n✓ Completed: %d/%d days logged successfully\n", successCount, len(daysToLog))
+		return nil
+	}
+
+	// Single day log (original behavior)
 	response, err := client.AddWorklogWithStartTime(
 		matchedTemplate.IssueKey,
 		normalizeTimeSpent(timeSpent),
